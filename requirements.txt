@@ -14,3 +14,4 @@ tzdata==2025.2
 urllib3==2.5.0
 virtualenv==20.34.0
 virtualenvwrapper-win==1.2.7
+folium==0.14.0
