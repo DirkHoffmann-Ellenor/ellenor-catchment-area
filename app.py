@@ -117,16 +117,24 @@ allowed_postcode_areas = []
 for r in region_filter:
     allowed_postcode_areas.extend(REGION_GROUPS[r])
 
-def apply_filters(df):
-    return df[
+def apply_filters(df, donation_range=None):
+    filtered = df[
         (df["country"].isin(country_filter)) &
         (df["postcode_area"].isin(allowed_postcode_areas))
-    ].copy()
+    ]
 
-pf = apply_filters(patients)
-du = apply_filters(donors_unique)
-de = apply_filters(donor_events)
-shops = apply_filters(shops)
+    # Apply donation range only if donations column exists
+    if donation_range and "Donation Amount" in df.columns:
+        min_don, max_don = donation_range
+        filtered = filtered[
+            (filtered["Donation Amount"] >= min_don) &
+            (filtered["Donation Amount"] <= max_don)
+        ]
+
+    return filtered.copy()
+
+
+
 
 # ----------------------------
 # Layer toggles / mode
@@ -137,6 +145,58 @@ show_patients_heat   = st.sidebar.checkbox("Patients — Heat", True)
 show_donors_points   = st.sidebar.checkbox("Donors — Points (Blue)", True)
 show_donors_heat     = st.sidebar.checkbox("Donors — Heat", True)
 show_shops_points    = st.sidebar.checkbox("Shops — Points (Green)", True)
+
+# ----------------------------
+# Donation Amount Filter (Improved)
+# ----------------------------
+st.sidebar.subheader("💷 Donation Amount Filter")
+
+if not donor_events.empty:
+    min_donation = float(donor_events["Donation Amount"].min())
+    max_donation = float(donor_events["Donation Amount"].max())
+
+    col_min, col_max = st.sidebar.columns(2)
+
+    with col_min:
+        min_input = st.number_input(
+            "Min (£)",
+            min_value=0.0,
+            max_value=max_donation,
+            value=0.0,
+            step=1.0,
+        )
+
+    with col_max:
+        max_input = st.number_input(
+            "Max (£)",
+            min_value=min_input,      # ensures max >= min
+            max_value=max_donation,
+            value=max_donation,
+            step=1.0,
+        )
+
+    donation_filter = (min_input, max_input)
+
+    # 🔥 Live count of donors matching the range
+    count_in_range = donor_events[
+        (donor_events["Donation Amount"] >= min_input) &
+        (donor_events["Donation Amount"] <= max_input)
+    ].shape[0]
+
+    st.sidebar.markdown(
+        f"**Donor events in this range:** {count_in_range:,}"
+    )
+
+else:
+    donation_filter = (0.0, 0.0)
+    st.sidebar.info("No donor data available.")
+
+
+pf = apply_filters(patients)
+du = apply_filters(donors_unique)
+de = apply_filters(donor_events, donation_filter)
+shops = apply_filters(shops)
+
 
 # ----------------------------
 # Timeline mode toggle
