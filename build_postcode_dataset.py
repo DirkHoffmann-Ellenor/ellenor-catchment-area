@@ -93,6 +93,9 @@ def geocode_unique_postcodes(postcodes, outfile, existing_lookup=None, polite_de
 
     return df, existing_lookup
 
+# add these near your other constants
+SHOPS_FILE = "ellenor_shops.csv"
+SHOPS_GEOCODED = "shops_geocoded.csv"
 
 def main():
     # 1) Patients -> unique postcodes -> geocode
@@ -104,79 +107,104 @@ def main():
     #     existing_lookup={}
     # )
 
-    # 2) Donor raw files -> concat -> standardise -> parse dates (DD/MM/YYYY) -> unique postcodes
-    donor_frames = []
-    for f in DONOR_FILES:
-        if Path(f).exists():
-            df = pd.read_csv(f)
-            donor_frames.append(df)
-        else:
-            print(f"⚠️ Missing donor file: {f}")
+    # # 2) Donor raw files -> concat -> standardise -> parse dates (DD/MM/YYYY) -> unique postcodes
+    # donor_frames = []
+    # for f in DONOR_FILES:
+    #     if Path(f).exists():
+    #         df = pd.read_csv(f)
+    #         donor_frames.append(df)
+    #     else:
+    #         print(f"⚠️ Missing donor file: {f}")
 
-    if not donor_frames:
-        print("⚠️ No donor files found. Skipping donor processing.")
-        return
+    # if not donor_frames:
+    #     print("⚠️ No donor files found. Skipping donor processing.")
+    #     return
 
-    donors_raw = pd.concat(donor_frames, ignore_index=True)
+    # donors_raw = pd.concat(donor_frames, ignore_index=True)
 
-    # Normalise column names
-    donors_raw.columns = [c.strip() for c in donors_raw.columns]
-    if "Postcode" not in donors_raw.columns:
-        raise ValueError("Donor files must contain a 'Postcode' column.")
-    if DONOR_DATE_COLUMN not in donors_raw.columns:
-        raise ValueError(f"Donor files must contain a '{DONOR_DATE_COLUMN}' column.")
+    # # Normalise column names
+    # donors_raw.columns = [c.strip() for c in donors_raw.columns]
+    # if "Postcode" not in donors_raw.columns:
+    #     raise ValueError("Donor files must contain a 'Postcode' column.")
+    # if DONOR_DATE_COLUMN not in donors_raw.columns:
+    #     raise ValueError(f"Donor files must contain a '{DONOR_DATE_COLUMN}' column.")
 
-    # Date parsing fix — DD/MM/YYYY
-    donors_raw["__date"] = pd.to_datetime(
-        donors_raw[DONOR_DATE_COLUMN].astype(str).str.strip(),
-        dayfirst=True,
-        errors="coerce"
-    )
-    # Filter out bad dates
-    donors_raw = donors_raw[donors_raw["__date"].notna()].copy()
-    donors_raw["month"] = donors_raw["__date"].dt.to_period("M").astype(str)  # e.g. 2024-03
+    # # Date parsing fix — DD/MM/YYYY
+    # donors_raw["__date"] = pd.to_datetime(
+    #     donors_raw[DONOR_DATE_COLUMN].astype(str).str.strip(),
+    #     dayfirst=True,
+    #     errors="coerce"
+    # )
+    # # Filter out bad dates
+    # donors_raw = donors_raw[donors_raw["__date"].notna()].copy()
+    # donors_raw["month"] = donors_raw["__date"].dt.to_period("M").astype(str)  # e.g. 2024-03
 
-    # 3) Donors unique postcodes -> geocode (reusing patient lookup to avoid extra calls)
-    donor_unique_postcodes = donors_raw["Postcode"].dropna().drop_duplicates()
-    donors_geocoded, lookup = geocode_unique_postcodes(
-        postcodes=donor_unique_postcodes,
-        outfile=DONORS_GEOCODED,
-    )
+    # # 3) Donors unique postcodes -> geocode (reusing patient lookup to avoid extra calls)
+    # donor_unique_postcodes = donors_raw["Postcode"].dropna().drop_duplicates()
+    # donors_geocoded, lookup = geocode_unique_postcodes(
+    #     postcodes=donor_unique_postcodes,
+    #     outfile=DONORS_GEOCODED,
+    # )
 
-    # 4) Build donor EVENTS table with coordinates merged (no repeated geocoding)
-    if donors_geocoded.empty:
-        print("⚠️ Donor geocoded table is empty. Skipping events output.")
-        return
+    # # 4) Build donor EVENTS table with coordinates merged (no repeated geocoding)
+    # if donors_geocoded.empty:
+    #     print("⚠️ Donor geocoded table is empty. Skipping events output.")
+    #     return
 
-    donors_geocoded_lookup = donors_geocoded.set_index("postcode")[["latitude", "longitude", "admin_district", "admin_county", "country"]].to_dict(orient="index")
+    # donors_geocoded_lookup = donors_geocoded.set_index("postcode")[["latitude", "longitude", "admin_district", "admin_county", "country"]].to_dict(orient="index")
 
-    # Map coords onto each donation event
-    def attach_coords(pc):
-        pc = str(pc).strip().upper()
-        return donors_geocoded_lookup.get(pc, None)
+    # # Map coords onto each donation event
+    # def attach_coords(pc):
+    #     pc = str(pc).strip().upper()
+    #     return donors_geocoded_lookup.get(pc, None)
 
-    coords = donors_raw["Postcode"].apply(attach_coords)
-    donors_events = donors_raw.copy()
-    donors_events["latitude"] = coords.apply(lambda x: x["latitude"] if x else None)
-    donors_events["longitude"] = coords.apply(lambda x: x["longitude"] if x else None)
-    donors_events["admin_district"] = coords.apply(lambda x: x.get("admin_district", "") if x else "")
-    donors_events["admin_county"] = coords.apply(lambda x: x.get("admin_county", "") if x else "")
-    donors_events["country"] = coords.apply(lambda x: x.get("country", "") if x else "")
+    # coords = donors_raw["Postcode"].apply(attach_coords)
+    # donors_events = donors_raw.copy()
+    # donors_events["latitude"] = coords.apply(lambda x: x["latitude"] if x else None)
+    # donors_events["longitude"] = coords.apply(lambda x: x["longitude"] if x else None)
+    # donors_events["admin_district"] = coords.apply(lambda x: x.get("admin_district", "") if x else "")
+    # donors_events["admin_county"] = coords.apply(lambda x: x.get("admin_county", "") if x else "")
+    # donors_events["country"] = coords.apply(lambda x: x.get("country", "") if x else "")
 
-    donors_events = donors_events.dropna(subset=["latitude", "longitude"]).copy()
+    # donors_events = donors_events.dropna(subset=["latitude", "longitude"]).copy()
 
-    # Save donor events with coords + month
-    donors_events.to_csv(DONOR_EVENTS_GEOCODED, index=False)
-    print(f"✅ Saved {DONOR_EVENTS_GEOCODED} ({len(donors_events):,} rows)")
+    # # Save donor events with coords + month
+    # donors_events.to_csv(DONOR_EVENTS_GEOCODED, index=False)
+    # print(f"✅ Saved {DONOR_EVENTS_GEOCODED} ({len(donors_events):,} rows)")
+
+    # 5) Shops unique postcodes -> geocode (from ellenor_shops.csv)
+    if Path(SHOPS_FILE).exists():
+        shops_df = pd.read_csv(SHOPS_FILE)
+        # normalise column names to be safe
+        shops_df.columns = [c.strip().lower() for c in shops_df.columns]
+        if "postcodes" not in shops_df.columns:
+            raise ValueError(f"'{SHOPS_FILE}' must contain a 'postcodes' column.")
+        shop_postcodes = (
+            shops_df["postcodes"]
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            .replace({"": pd.NA})
+            .dropna()
+            .drop_duplicates()
+        )
+        shops_geocoded, _ = geocode_unique_postcodes(
+            postcodes=shop_postcodes,
+            outfile=SHOPS_GEOCODED,
+        )
+        print(f"✅ Saved {SHOPS_GEOCODED} ({len(shops_geocoded):,} rows)")
+    else:
+        print(f"⚠️ Missing shops file: {SHOPS_FILE}")
 
     print("\nAll done! Files ready for the Streamlit app:")
     print(f" - {PATIENTS_GEOCODED}")
     print(f" - {DONORS_GEOCODED}")
     print(f" - {DONOR_EVENTS_GEOCODED}")
-
+    print(f" - {SHOPS_GEOCODED} (if source file present)")
 
 if __name__ == "__main__":
     main()
+
 
 # in build_postcode_dataset.py (one-off helper)
 def build_donor_events_geocoded(raw_events_csv, postcode_lookup_csv, out_csv):

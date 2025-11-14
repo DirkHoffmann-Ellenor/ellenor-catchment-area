@@ -31,9 +31,10 @@ def load_data():
     patients = pd.read_csv("postcode_coordinates.csv")
     donors_unique = pd.read_csv("donor_postcode_coordinates.csv")
     donor_events = pd.read_csv("donor_events_geocoded.csv")
+    shops = pd.read_csv("shops_geocoded.csv")
 
     # postcode area (first 1–2 letters)
-    for df in [patients, donors_unique, donor_events]:
+    for df in [patients, donors_unique, donor_events, shops]:
         df["postcode"] = df["postcode"].astype(str).str.strip()
         df["postcode_area"] = df["postcode"].str.extract(r"^([A-Z]{1,2})")
 
@@ -61,9 +62,9 @@ def load_data():
     else:
         donor_events["Donation Amount"] = 0.0
 
-    return patients, donors_unique, donor_events
+    return patients, donors_unique, donor_events, shops
 
-patients, donors_unique, donor_events = load_data()
+patients, donors_unique, donor_events, shops = load_data()
 
 # ----------------------------
 # Region group mapping
@@ -107,6 +108,7 @@ def apply_filters(df):
 pf = apply_filters(patients)
 du = apply_filters(donors_unique)
 de = apply_filters(donor_events)
+shops = apply_filters(shops)
 
 # ----------------------------
 # Layer toggles / mode
@@ -116,6 +118,7 @@ show_patients_points = st.sidebar.checkbox("Patients — Points (Red)", True)
 show_patients_heat   = st.sidebar.checkbox("Patients — Heat", True)
 show_donors_points   = st.sidebar.checkbox("Donors — Points (Blue)", True)
 show_donors_heat     = st.sidebar.checkbox("Donors — Heat", True)
+show_shops_points    = st.sidebar.checkbox("Shops — Points (Green)", True)
 
 # ----------------------------
 # Timeline mode toggle
@@ -123,7 +126,7 @@ show_donors_heat     = st.sidebar.checkbox("Donors — Heat", True)
 st.sidebar.subheader("🎞 Donor display mode")
 show_all_donors = st.sidebar.checkbox(
     "Show all donors at once (hide timeline)",
-    value=False,
+    value=True,
     help=("When checked, the map shows every donor event simultaneously and the timeline control is removed. "
           "When unchecked, an on-map timeline animates donors month-by-month.")
 )
@@ -141,7 +144,7 @@ st.metric("Total Donations", f"£{total_donations:,.2f}")
 def create_map():
     # Use filtered datasets for map center
     combined_for_center = pd.concat(
-        [pf[["latitude","longitude"]], du[["latitude","longitude"]], de[["latitude","longitude"]]],
+        [pf[["latitude","longitude"]], du[["latitude","longitude"]], de[["latitude","longitude"]], shops[["latitude","longitude"]]],
         ignore_index=True
     ).dropna()
     if combined_for_center.empty:
@@ -171,7 +174,17 @@ def create_map():
                 color="red", fill=True, fill_opacity=0.85,
                 popup=f"{row.get('postcode','')}"
             ).add_to(m)
-            
+
+    # -------- Shops --------
+    if show_shops_points and not shops.empty:
+        for _, row in shops.iterrows():
+            folium.CircleMarker(
+                [row.latitude, row.longitude],
+                radius=4,
+                color="green", fill=True, fill_opacity=0.85,
+                popup=f"{row.get('name','')} ({row.get('postcode','')})"
+            ).add_to(m)
+
     # -------- Donors (two mutually-exclusive modes) --------
     if show_all_donors:
         # STATIC DONOR POINT MODE (NO TIMELINE)
@@ -218,9 +231,14 @@ def create_map():
                 return pd.to_datetime(str(month_str) + "-01").strftime("%Y-%m-%d")
             except:
                 return "1970-01-01"
-
+            
         features = []
         for _, row in de.dropna(subset=["latitude","longitude","month"]).iterrows():
+            popup_html = (
+                f"<b>Postcode:</b> {row.get('postcode','')}<br>"
+                f"<b>Month:</b> {row.get('month','')}<br>"
+                f"<b>Donation Amount:</b> £{row.get('Donation Amount',0)}"
+            )
             features.append({
                 "type": "Feature",
                 "geometry": {"type": "Point", "coordinates": [float(row["longitude"]), float(row["latitude"])]},
@@ -228,18 +246,17 @@ def create_map():
                     "time": month_to_date(row["month"]),
                     "style": {"color": "blue", "fillColor": "blue", "radius": 4},
                     "icon": "circle",
-                    "popup": (
-                        f"<b>Postcode:</b> {row.get('postcode','')}<br>"
-                        f"<b>Month:</b> {row.get('month','')}<br>"
-                        f"<b>Donation Amount:</b> £{row.get('Donation Amount',0)}"
-                    ),
+                    "popup": popup_html,   # keep the popup content
                 },
             })
 
-        plugins.TimestampedGeoJson(
-            {"type": "FeatureCollection", "features": features},
+        tgjson = plugins.TimestampedGeoJson(
+            {
+                "type": "FeatureCollection",
+                "features": features
+            },
             period="P1M",
-            add_last_point=False,
+            add_last_point=True,
             auto_play=False,
             loop=False,
             max_speed=1,
@@ -247,7 +264,63 @@ def create_map():
             date_options="YYYY-MM",
             time_slider_drag_update=True,
             duration="P1M"
-        ).add_to(m)
+        )
+        tgjson.add_to(m)
+
+        # --- Bind popups robustly for all timeline layers (rebind on time events) ---
+        m.get_root().html.add_child(folium.Element("""
+        <script>
+        (function () {
+        function findMap(cb) {
+            function tryFind() {
+            for (const k in window) {
+                if (window[k] instanceof L.Map) { cb(window[k]); return; }
+            }
+            setTimeout(tryFind, 200);
+            }
+            tryFind();
+        }
+
+        function bindPopupsDeep(layer) {
+            if (!layer) return;
+
+            // If this layer is a feature with popup content, bind it (once)
+            if (layer.feature && layer.feature.properties && layer.feature.properties.popup) {
+            const hasPopup = (typeof layer.getPopup === 'function') && !!layer.getPopup();
+            if (!hasPopup && typeof layer.bindPopup === 'function') {
+                layer.bindPopup(layer.feature.properties.popup);
+            }
+            }
+
+            // Recurse into children (covers LayerGroup, GeoJSON, TimeDimension slices, etc.)
+            if (typeof layer.eachLayer === 'function') {
+            layer.eachLayer(function (child) { bindPopupsDeep(child); });
+            } else if (layer._layers) {
+            Object.values(layer._layers).forEach(bindPopupsDeep);
+            }
+        }
+
+        findMap(function (map) {
+            function bindAll() { map.eachLayer(bindPopupsDeep); }
+
+            // Initial bind for currently-visible layers
+            bindAll();
+
+            // Re-bind whenever the time changes or a new time slice loads
+            if (map.timeDimension) {
+            map.timeDimension.on('timeload', bindAll);
+            map.timeDimension.on('timechanged', bindAll);
+            }
+
+            // Also re-bind when layers are added (e.g., toggling overlays)
+            map.on('layeradd', function () { setTimeout(bindAll, 0); });
+        });
+        })();
+        </script>
+        """))
+
+
+
 
         # --- MONTH TOTALS + FLOATING BOX (ONLY HERE) ---
         month_totals_map = (
@@ -320,7 +393,14 @@ def create_map():
         </script>
         """))
 
-
+    if show_shops_points and not shops.empty:
+        for _, row in shops.dropna(subset=["latitude","longitude"]).iterrows():
+            folium.CircleMarker(
+                [row.latitude, row.longitude],
+                radius=4,
+                color="green", fill=True, fill_opacity=0.9,
+                popup=f"{row.get('name','')} ({row.get('postcode','')})"
+            ).add_to(m)
 
     folium.LayerControl().add_to(m)
     return m
