@@ -177,6 +177,7 @@ if not donor_events.empty:
 
     donation_filter = (min_input, max_input)
 
+
     # 🔥 Live count of donors matching the range
     count_in_range = donor_events[
         (donor_events["Donation Amount"] >= min_input) &
