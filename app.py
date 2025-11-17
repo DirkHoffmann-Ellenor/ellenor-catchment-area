@@ -91,20 +91,34 @@ def login():
     password = st.text_input("Password", type="password")
 
     if st.button("Login"):
+        # Validate user/pass
         if username in st.secrets["users"] and st.secrets["users"][username] == password:
+
             st.session_state["logged_in"] = True
+            st.session_state["username"] = username
+
+            if "user_api_keys" in st.secrets and username in st.secrets["user_api_keys"]:
+                st.session_state["api_key"] = st.secrets["user_api_keys"][username]
+            else:
+                st.session_state["api_key"] = None  # fallback
+
             st.rerun()
         else:
             st.error("Invalid username or password")
 
+
 if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
     login()
     st.stop()
+
     
         
 # ----------------------------
 # Sidebar filters (NO month UI here)
 # ----------------------------
+st.sidebar.success(f"Logged in as **{st.session_state['username']}**")
+
+
 st.sidebar.header("🔍 Filter Options")
 
 # Country filter across both datasets
