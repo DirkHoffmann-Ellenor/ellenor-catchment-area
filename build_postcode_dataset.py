@@ -1,25 +1,19 @@
 import pandas as pd
 import requests
 import time
-import os
 from pathlib import Path
 
 # ----------------------------
-# CONFIG — adjust if needed
+# CONFIG
 # ----------------------------
-# PATIENTS_FILE = "EMIS Patient postcodes.csv"
-DONOR_FILES = ["DonorData1.csv", "DonorData2.csv", "DonorData3.csv"]   # can be 1..n files
-DONOR_DATE_COLUMN = "Donation Date"  # <-- change if your date column is named differently
-
-# Outputs (used by the app)
-PATIENTS_GEOCODED = "postcode_coordinates.csv"
-DONORS_GEOCODED = "donor_postcode_coordinates.csv"         # unique donor postcodes
-DONOR_EVENTS_GEOCODED = "donor_events_geocoded.csv"         # each donation with lat/lon and month
-
+INPUT_FILE = "donation_events.csv"
+OUTPUT_FILE = "donation_events_geocoded.csv"
+CACHE_FILE = "postcode_cache.csv"  # Stores all postcodes we've ever looked up
 
 def get_postcode_coordinates(postcode):
     """
     Look up a single UK postcode via postcodes.io
+    Returns dict with postcode, latitude, longitude, etc. or None if failed
     """
     postcode = str(postcode).strip().upper()
     if not postcode:
@@ -39,191 +33,141 @@ def get_postcode_coordinates(postcode):
                     "admin_county": res.get("admin_county", ""),
                     "country": res.get("country", "")
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ Error fetching {postcode}: {e}")
     return None
 
-
-def geocode_unique_postcodes(postcodes, outfile, existing_lookup=None, polite_delay=0.08):
+def load_postcode_cache(cache_file):
     """
-    Geocode a set of unique postcodes. Reuses any coordinates from an existing lookup dict or CSV.
+    Load existing postcode cache into a dictionary (hash map)
     """
-    results = []
-
-    # Start with existing lookup if provided
-    if existing_lookup is None:
-        existing_lookup = {}
-
-    # If an outfile already exists, merge it into the lookup too (so we never redo work)
-    if Path(outfile).exists():
-        prev = pd.read_csv(outfile)
-        for _, row in prev.iterrows():
-            existing_lookup[row["postcode"]] = {
-                "postcode": row["postcode"],
+    cache = {}
+    if Path(cache_file).exists():
+        df = pd.read_csv(cache_file)
+        for _, row in df.iterrows():
+            cache[row["postcode"]] = {
                 "latitude": row["latitude"],
                 "longitude": row["longitude"],
                 "admin_district": row.get("admin_district", ""),
                 "admin_county": row.get("admin_county", ""),
                 "country": row.get("country", "")
             }
+        print(f"✅ Loaded {len(cache):,} postcodes from cache")
+    return cache
 
-    postcodes = [str(p).strip().upper() for p in postcodes if pd.notna(p)]
-    postcodes = sorted(set(p for p in postcodes if p))
 
-    for i, pc in enumerate(postcodes):
-        if i % 50 == 0:
-            print(f"Geocoding {i}/{len(postcodes)} ...")
+def save_postcode_cache(cache, cache_file):
+    """
+    Save the postcode cache dictionary back to CSV
+    """
+    records = []
+    for pc, data in cache.items():
+        records.append({
+            "postcode": pc,
+            "latitude": data["latitude"],
+            "longitude": data["longitude"],
+            "admin_district": data.get("admin_district", ""),
+            "admin_county": data.get("admin_county", ""),
+            "country": data.get("country", "")
+        })
+    df = pd.DataFrame(records)
+    df.to_csv(cache_file, index=False)
+    print(f"✅ Saved {len(df):,} postcodes to cache")
 
-        if pc in existing_lookup:
-            results.append(existing_lookup[pc])
-            continue
 
-        rec = get_postcode_coordinates(pc)
-        if rec:
-            results.append(rec)
-            existing_lookup[pc] = rec
-        time.sleep(polite_delay)
+def geocode_donation_events(input_file, output_file, cache_file, polite_delay=0.08):
+    """
+    Main function: reads donation_events.csv, geocodes postcodes efficiently using cache,
+    and saves output with lat/lon columns added
+    """
+    # Load the donation events
+    print(f"📂 Reading {input_file}...")
+    df = pd.read_csv(input_file)
+    
+    # Normalize column names
+    df.columns = [c.strip() for c in df.columns]
+    
+    # Check for Postcode column (try common variations)
+    postcode_col = None
+    for col in df.columns:
+        if col.lower() in ["postcode", "post code", "postal code"]:
+            postcode_col = col
+            break
+    
+    if postcode_col is None:
+        raise ValueError(f"Could not find a postcode column. Available columns: {list(df.columns)}")
+    
+    print(f"✅ Found postcode column: '{postcode_col}'")
+    print(f"📊 Total rows: {len(df):,}")
+    
+    # Clean postcodes
+    df["postcode_clean"] = df[postcode_col].astype(str).str.strip().str.upper()
+    df["postcode_clean"] = df["postcode_clean"].replace({"NAN": "", "": pd.NA})
+    
+    # Count unique postcodes
+    unique_postcodes = df["postcode_clean"].dropna().unique()
+    print(f"🔍 Unique postcodes to geocode: {len(unique_postcodes):,}")
+    
+    # Load cache (hash map)
+    cache = load_postcode_cache(cache_file)
+    
+    # Find postcodes we need to fetch
+    postcodes_to_fetch = [pc for pc in unique_postcodes if pc not in cache]
+    print(f"🌐 Need to fetch from API: {len(postcodes_to_fetch):,}")
+    print(f"⚡ Already in cache: {len(unique_postcodes) - len(postcodes_to_fetch):,}")
+    
+    # Fetch missing postcodes
+    if postcodes_to_fetch:
+        print(f"\n🔄 Fetching {len(postcodes_to_fetch):,} postcodes from postcodes.io...")
+        for i, pc in enumerate(postcodes_to_fetch):
+            if i % 50 == 0 and i > 0:
+                print(f"   Progress: {i}/{len(postcodes_to_fetch)} ({i*100//len(postcodes_to_fetch)}%)")
+            
+            result = get_postcode_coordinates(pc)
+            if result:
+                cache[pc] = {
+                    "latitude": result["latitude"],
+                    "longitude": result["longitude"],
+                    "admin_district": result.get("admin_district", ""),
+                    "admin_county": result.get("admin_county", ""),
+                    "country": result.get("country", "")
+                }
+            time.sleep(polite_delay)  # Be polite to the API
+        
+        # Save updated cache
+        save_postcode_cache(cache, cache_file)
+    
+    # Map coordinates to dataframe using the cache (hash map lookup - O(1))
+    print(f"\n📍 Adding coordinates to all rows...")
+    df["latitude"] = df["postcode_clean"].map(lambda pc: cache.get(pc, {}).get("latitude"))
+    df["longitude"] = df["postcode_clean"].map(lambda pc: cache.get(pc, {}).get("longitude"))
+    df["admin_district"] = df["postcode_clean"].map(lambda pc: cache.get(pc, {}).get("admin_district", ""))
+    df["admin_county"] = df["postcode_clean"].map(lambda pc: cache.get(pc, {}).get("admin_county", ""))
+    df["country"] = df["postcode_clean"].map(lambda pc: cache.get(pc, {}).get("country", ""))
+    
+    # Drop the temporary clean column
+    df = df.drop(columns=["postcode_clean"])
+    
+    # Stats
+    total_rows = len(df)
+    geocoded_rows = df["latitude"].notna().sum()
+    failed_rows = total_rows - geocoded_rows
+    
+    print(f"\n📊 Results:")
+    print(f"   Total rows: {total_rows:,}")
+    print(f"   Successfully geocoded: {geocoded_rows:,} ({geocoded_rows*100//total_rows}%)")
+    print(f"   Failed/missing: {failed_rows:,}")
+    
+    # Save output
+    df.to_csv(output_file, index=False)
+    print(f"\n✅ Saved geocoded file: {output_file}")
+    print(f"   Columns added: latitude, longitude, admin_district, admin_county, country")
 
-    df = pd.DataFrame(results)
-    if not df.empty:
-        df.to_csv(outfile, index=False)
-        print(f"✅ Saved {outfile} ({len(df):,} rows)")
-    else:
-        print(f"⚠️ No rows to save in {outfile}")
-
-    return df, existing_lookup
-
-# add these near your other constants
-SHOPS_FILE = "ellenor_shops.csv"
-SHOPS_GEOCODED = "shops_geocoded.csv"
-
-def main():
-    # 1) Patients -> unique postcodes -> geocode
-    # patients = pd.read_csv(PATIENTS_FILE)
-    # patient_postcodes = patients["Postcode"].dropna().drop_duplicates()
-    # patients_geocoded, lookup = geocode_unique_postcodes(
-    #     postcodes=patient_postcodes,
-    #     outfile=PATIENTS_GEOCODED,
-    #     existing_lookup={}
-    # )
-
-    # # 2) Donor raw files -> concat -> standardise -> parse dates (DD/MM/YYYY) -> unique postcodes
-    # donor_frames = []
-    # for f in DONOR_FILES:
-    #     if Path(f).exists():
-    #         df = pd.read_csv(f)
-    #         donor_frames.append(df)
-    #     else:
-    #         print(f"⚠️ Missing donor file: {f}")
-
-    # if not donor_frames:
-    #     print("⚠️ No donor files found. Skipping donor processing.")
-    #     return
-
-    # donors_raw = pd.concat(donor_frames, ignore_index=True)
-
-    # # Normalise column names
-    # donors_raw.columns = [c.strip() for c in donors_raw.columns]
-    # if "Postcode" not in donors_raw.columns:
-    #     raise ValueError("Donor files must contain a 'Postcode' column.")
-    # if DONOR_DATE_COLUMN not in donors_raw.columns:
-    #     raise ValueError(f"Donor files must contain a '{DONOR_DATE_COLUMN}' column.")
-
-    # # Date parsing fix — DD/MM/YYYY
-    # donors_raw["__date"] = pd.to_datetime(
-    #     donors_raw[DONOR_DATE_COLUMN].astype(str).str.strip(),
-    #     dayfirst=True,
-    #     errors="coerce"
-    # )
-    # # Filter out bad dates
-    # donors_raw = donors_raw[donors_raw["__date"].notna()].copy()
-    # donors_raw["month"] = donors_raw["__date"].dt.to_period("M").astype(str)  # e.g. 2024-03
-
-    # # 3) Donors unique postcodes -> geocode (reusing patient lookup to avoid extra calls)
-    # donor_unique_postcodes = donors_raw["Postcode"].dropna().drop_duplicates()
-    # donors_geocoded, lookup = geocode_unique_postcodes(
-    #     postcodes=donor_unique_postcodes,
-    #     outfile=DONORS_GEOCODED,
-    # )
-
-    # # 4) Build donor EVENTS table with coordinates merged (no repeated geocoding)
-    # if donors_geocoded.empty:
-    #     print("⚠️ Donor geocoded table is empty. Skipping events output.")
-    #     return
-
-    # donors_geocoded_lookup = donors_geocoded.set_index("postcode")[["latitude", "longitude", "admin_district", "admin_county", "country"]].to_dict(orient="index")
-
-    # # Map coords onto each donation event
-    # def attach_coords(pc):
-    #     pc = str(pc).strip().upper()
-    #     return donors_geocoded_lookup.get(pc, None)
-
-    # coords = donors_raw["Postcode"].apply(attach_coords)
-    # donors_events = donors_raw.copy()
-    # donors_events["latitude"] = coords.apply(lambda x: x["latitude"] if x else None)
-    # donors_events["longitude"] = coords.apply(lambda x: x["longitude"] if x else None)
-    # donors_events["admin_district"] = coords.apply(lambda x: x.get("admin_district", "") if x else "")
-    # donors_events["admin_county"] = coords.apply(lambda x: x.get("admin_county", "") if x else "")
-    # donors_events["country"] = coords.apply(lambda x: x.get("country", "") if x else "")
-
-    # donors_events = donors_events.dropna(subset=["latitude", "longitude"]).copy()
-
-    # # Save donor events with coords + month
-    # donors_events.to_csv(DONOR_EVENTS_GEOCODED, index=False)
-    # print(f"✅ Saved {DONOR_EVENTS_GEOCODED} ({len(donors_events):,} rows)")
-
-    # 5) Shops unique postcodes -> geocode (from ellenor_shops.csv)
-    if Path(SHOPS_FILE).exists():
-        shops_df = pd.read_csv(SHOPS_FILE)
-        # normalise column names to be safe
-        shops_df.columns = [c.strip().lower() for c in shops_df.columns]
-        if "postcodes" not in shops_df.columns:
-            raise ValueError(f"'{SHOPS_FILE}' must contain a 'postcodes' column.")
-        shop_postcodes = (
-            shops_df["postcodes"]
-            .astype(str)
-            .str.strip()
-            .str.upper()
-            .replace({"": pd.NA})
-            .dropna()
-            .drop_duplicates()
-        )
-        shops_geocoded, _ = geocode_unique_postcodes(
-            postcodes=shop_postcodes,
-            outfile=SHOPS_GEOCODED,
-        )
-        print(f"✅ Saved {SHOPS_GEOCODED} ({len(shops_geocoded):,} rows)")
-    else:
-        print(f"⚠️ Missing shops file: {SHOPS_FILE}")
-
-    print("\nAll done! Files ready for the Streamlit app:")
-    print(f" - {PATIENTS_GEOCODED}")
-    print(f" - {DONORS_GEOCODED}")
-    print(f" - {DONOR_EVENTS_GEOCODED}")
-    print(f" - {SHOPS_GEOCODED} (if source file present)")
 
 if __name__ == "__main__":
-    main()
-
-
-# in build_postcode_dataset.py (one-off helper)
-def build_donor_events_geocoded(raw_events_csv, postcode_lookup_csv, out_csv):
-    events = pd.read_csv(raw_events_csv)  # must contain Postcode, Date, Donation Amount
-    lookup = pd.read_csv(postcode_lookup_csv)  # columns: postcode, latitude, longitude, country, etc.
-
-    # Clean & parse
-    events["postcode"] = events["Postcode"].astype(str).str.upper().str.strip()
-    events["__date"] = pd.to_datetime(events["Date"].astype(str).str.strip(), dayfirst=True, errors="coerce")
-    events = events[events["__date"].notna()].copy()
-    events["month"] = events["__date"].dt.to_period("M").astype(str)
-    events["Donation Amount"] = (
-        events["Donation Amount"].astype(str).str.replace("[£,]", "", regex=True).str.strip()
+    geocode_donation_events(
+        input_file=INPUT_FILE,
+        output_file=OUTPUT_FILE,
+        cache_file=CACHE_FILE
     )
-    events["Donation Amount"] = pd.to_numeric(events["Donation Amount"], errors="coerce").fillna(0.0)
-
-    # Join to lat/lon
-    lookup["postcode"] = lookup["postcode"].astype(str).str.upper().str.strip()
-    out = events.merge(lookup[["postcode","latitude","longitude","country"]], on="postcode", how="left")
-    out = out.dropna(subset=["latitude","longitude"])
-    out.to_csv(out_csv, index=False)
-    print(f"Saved {out_csv} ({len(out):,} rows)")
+    print("\n🎉 All done!")

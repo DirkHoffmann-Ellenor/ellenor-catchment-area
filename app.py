@@ -18,51 +18,89 @@ st.title("🏥 Patient + Donor Geographical Coverage Explorer")
 @st.cache_data
 def load_data():
     """
-    Loads three CSVs:
-      - postcode_coordinates.csv               (patients; columns: postcode, latitude, longitude, country)
-      - donor_postcode_coordinates.csv         (unique donor postcodes; columns: postcode, latitude, longitude, country)
-      - donor_events_geocoded.csv              (each donation; columns: postcode, latitude, longitude, Date, Donation Amount[, month])
+    Loads:
+      - postcode_coordinates.csv      (patients)
+      - donation_events_geocoded.csv     (donor events, aggregated)
+      - shops_geocoded.csv            (shops)
 
-    Enrich:
-      - postcode_area (first 1–2 letters)
-      - month (YYYY-MM) derived from Date if missing
-      - Donation Amount numeric (strip symbols/commas)
+    Donor CSV schema (example):
+      Month_Year, Postcode, Donor_Type, Total_Amount, Number_of_Donors,
+      latitude, longitude, admin_district, admin_county, country
+
+    Creates:
+      - donor_events['month_dt'] : datetime (first day of that month)
+      - donor_events['year']     : integer year
+      - donor_events['month']    : 'YYYY-MM' string for timeline
+      - donor_events['Donation Amount'] : numeric, from Total_Amount
+
+    Filters donor_events to 2021-01-01 and later.
     """
+    # Load core data
     patients = pd.read_csv("postcode_coordinates.csv")
-    donors_unique = pd.read_csv("donor_postcode_coordinates.csv")
-    donor_events = pd.read_csv("donor_events_geocoded.csv")
+    donor_events = pd.read_csv("donation_events_geocoded.csv")
     shops = pd.read_csv("shops_geocoded.csv")
 
-    # postcode area (first 1–2 letters)
-    for df in [patients, donors_unique, donor_events, shops]:
-        df["postcode"] = df["postcode"].astype(str).str.strip()
-        df["postcode_area"] = df["postcode"].str.extract(r"^([A-Z]{1,2})")
+    # --- Standardise donor column names ---
+    # Ensure we have a 'postcode' column
+    if "Postcode" in donor_events.columns and "postcode" not in donor_events.columns:
+        donor_events.rename(columns={"Postcode": "postcode"}, inplace=True)
 
-    # --- Date → month parsing (robust DD/MM/YYYY) ---
-    if "month" not in donor_events.columns or donor_events["month"].isna().any():
-        donor_events["__date"] = pd.to_datetime(
-            donor_events["Date"].astype(str).str.strip(),
-            dayfirst=True,
-            errors="coerce"
-        )
-        donor_events = donor_events[donor_events["__date"].notna()].copy()
-        donor_events["month"] = donor_events["__date"].dt.to_period("M").astype(str)  # YYYY-MM
+    # Keep original Month_Year, but also parse it
+    donor_events["Month_Year"] = donor_events["Month_Year"].astype(str).str.strip()
 
-    # --- Donation Amount to numeric ---
-    if "Donation Amount" in donor_events.columns:
+    # Month_Year is in format MM/YYYY (e.g. 01/2015)
+    donor_events["month_dt"] = pd.to_datetime(
+        donor_events["Month_Year"],
+        format="%m/%Y",
+        errors="coerce"
+    )
+
+    # Drop rows where we couldn't parse the month
+    donor_events = donor_events[donor_events["month_dt"].notna()].copy()
+
+    # 🔎 Filter to 2022 onwards
+    donor_events = donor_events[
+        donor_events["month_dt"] >= pd.Timestamp("2022-01-01")
+    ].copy()
+
+    # Derive year and a clean 'YYYY-MM' month key
+    donor_events["year"] = donor_events["month_dt"].dt.year
+    donor_events["month"] = donor_events["month_dt"].dt.to_period("M").astype(str)  # e.g. '2021-03'
+
+    # --- Donation Amount ---
+    # Map Total_Amount → Donation Amount and ensure it's numeric
+    if "Total_Amount" in donor_events.columns:
         donor_events["Donation Amount"] = (
-            donor_events["Donation Amount"]
+            donor_events["Total_Amount"]
             .astype(str)
             .str.replace(r"[£,]", "", regex=True)
-            .astype(float)
         )
-        donor_events["Donation Amount"] = pd.to_numeric(
-            donor_events["Donation Amount"], errors="coerce"
-        ).fillna(0.0)
     else:
         donor_events["Donation Amount"] = 0.0
 
+    donor_events["Donation Amount"] = pd.to_numeric(
+        donor_events["Donation Amount"], errors="coerce"
+    ).fillna(0.0)
+
+    # --- Postcode area extraction for all datasets ---
+    for df in [patients, donor_events, shops]:
+        # Some files might still use 'Postcode'
+        if "postcode" not in df.columns and "Postcode" in df.columns:
+            df.rename(columns={"Postcode": "postcode"}, inplace=True)
+
+        df["postcode"] = df["postcode"].astype(str).str.strip()
+        df["postcode_area"] = df["postcode"].str.extract(r"^([A-Z]{1,2})")
+
+    # --- donors_unique: unique postcode locations from donor_events ---
+    donors_unique = (
+        donor_events[["postcode", "latitude", "longitude", "country", "postcode_area"]]
+        .dropna(subset=["latitude", "longitude"])
+        .drop_duplicates(subset=["postcode"])
+        .reset_index(drop=True)
+    )
+
     return patients, donors_unique, donor_events, shops
+
 
 patients, donors_unique, donor_events, shops = load_data()
 
