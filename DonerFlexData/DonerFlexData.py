@@ -22,7 +22,7 @@ class DonationDataProcessor:
         else:
             print(f"Creating new results file: {self.results_csv}")
             return pd.DataFrame(columns=[
-                'Month_Year', 'Postcode', 'Donor_Type', 
+                'Month_Year', 'Postcode', 'Donor Type', 
                 'Total_Amount', 'Number_of_Donors'
             ])
     
@@ -56,9 +56,15 @@ class DonationDataProcessor:
             'Donor No': 'count'  # Count number of donors
         }).reset_index()
         
+        source_map = df.groupby(['Month_Year', 'Postcode', 'Donor Type'])['Source'].first()
+        application_map = df.groupby(['Month_Year', 'Postcode', 'Donor Type'])['Application'].first()
+
+        grouped['Source'] = grouped.apply(lambda row: source_map.loc[(row['Month_Year'], row['Postcode'], row['Donor Type'])], axis=1)
+        grouped['Application'] = grouped.apply(lambda row: application_map.loc[(row['Month_Year'], row['Postcode'], row['Donor Type'])], axis=1)
+        
         # Rename columns to match results format
-        grouped.columns = ['Month_Year', 'Postcode', 'Donor_Type', 
-                          'Total_Amount', 'Number_of_Donors']
+        grouped.columns = ['Month_Year', 'Postcode', 'Donor Type', 
+                          'Total_Amount', 'Number_of_Donors', 'Source', 'Application']
         
         return grouped
     
@@ -74,16 +80,19 @@ class DonationDataProcessor:
         
         # Group by Month_Year, Postcode, and Donor_Type to combine duplicates
         self.results_df = combined.groupby(
-            ['Month_Year', 'Postcode', 'Donor_Type'], 
+            ['Month_Year', 'Postcode', 'Donor Type'],  
             as_index=False
         ).agg({
             'Total_Amount': 'sum',
-            'Number_of_Donors': 'sum'
+            'Number_of_Donors': 'sum',
+            'Source': 'first',
+            'Application': 'first'
         })
+
         
         # Sort by Month_Year and Postcode
         self.results_df = self.results_df.sort_values(
-            ['Month_Year', 'Postcode', 'Donor_Type']
+            ['Month_Year', 'Postcode', 'Donor Type']
         ).reset_index(drop=True)
     
     def save_results(self):
@@ -125,7 +134,7 @@ class DonationDataProcessor:
         print(f"\nTotal unique combinations: {len(self.results_df)}")
         print(f"Date range: {self.results_df['Month_Year'].min()} to {self.results_df['Month_Year'].max()}")
         print(f"Unique postcodes: {self.results_df['Postcode'].nunique()}")
-        print(f"Donor types: {', '.join(self.results_df['Donor_Type'].unique())}")
+        print(f"Donor types: {', '.join(self.results_df['Donor Type'].unique())}")
         print(f"\nTotal donation amount: £{self.results_df['Total_Amount'].sum():,.2f}")
         print(f"Total number of donors: {self.results_df['Number_of_Donors'].sum():,.0f}")
         
@@ -138,27 +147,19 @@ class DonationDataProcessor:
 # Example usage
 if __name__ == "__main__":
     # Set the directory where your data files are located
-    data_directory = r"C:\Users\dirk.hoffman\OneDrive - ellenor\Documents\DonerFlexData"
-    
+    data_directory = r"C:\Users\dirk.hoffman\OneDrive - ellenor\Documents\ellenor-catchment-area\DonerFlexData"
     # Change to the data directory
     os.chdir(data_directory)
     print(f"Working directory: {os.getcwd()}\n")
     
     # Initialize the processor (results CSV will be saved in the same directory)
-    processor = DonationDataProcessor(results_csv='donation_results.csv')
+    processor = DonationDataProcessor(results_csv='donation_results_2.csv')
     
-    # Define the files to process
-    # You can manually list files or generate them programmatically
-    files_to_process = [
-        "Donation Data 2015 part 1.xls",
-        "Donation Data 2015 part 2.xls",
-        # Add more files as needed
-    ]
     
     # Alternative: Generate file list programmatically
     # This will automatically find all matching files in the directory
     files_to_process = []
-    for year in range(2015, 2026):  # 2015 to 2025
+    for year in range(2021, 2026):  # 2015 to 2025
         for part in range(1, 4):  # parts 1-3
             filename = f"Donation Data {year} part {part}.xls"
             if os.path.exists(filename):

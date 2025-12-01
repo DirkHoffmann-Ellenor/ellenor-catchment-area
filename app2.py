@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import pydeck as pdk
 from datetime import datetime
+import geopandas as gpd
+import json
 
 # ----------------------------
 # Page config
@@ -22,21 +24,44 @@ CATCHMENT_WEST = [
 
 CATCHMENT_ALL = CATCHMENT_EAST + CATCHMENT_WEST
 
+# ----------------------------------------------------
+# 🎨 FIXED COLOUR MAP FOR DONATION SOURCES
+# ----------------------------------------------------
+DONATION_SOURCE_COLORS = {
+    "LSPSWP":  [255, 165, 0, 220],   # Lottery Play money
+    "LSPRDD":  [255, 140, 0, 220],   # Lottery play (variation)
+    "REGSOL":  [0, 128, 255, 220],   # Regular Giving (solicited)
+    "REGOLD":  [0, 102, 204, 220],   # Regular Giving (old)
+    "IMOGEN":  [255, 105, 180, 220], # In Memory General
+    "LSPLDD":  [255, 165, 0, 220],   # Lottery play money
+    "LSPBBP":  [255, 165, 0, 220],   # Lottery play money
+    "IMOMTR":  [219, 112, 147, 220], # Memory Tree
+    "LOTDON":  [255, 165, 0, 220],   # Lottery donation
+    "GDRTKT":  [50, 205, 50, 220],   # Prize Draw Tickets
+    "LOLSOL":  [255, 215, 0, 220],   # Lights of Love
+    "CFADON":  [30, 144, 255, 220],  # Community fundraising
+    "TWIREG":  [138, 43, 226, 220],  # Twilight registration
+    "APLSOL":  [0, 191, 255, 220],   # Appeal donations
+    "TWISPO":  [148, 0, 211, 220],   # Twilight sponsorship
+    "APLXMS":  [0, 255, 255, 220],   # Christmas Appeal
+}
+
+DEFAULT_SOURCE_COLOR = [200, 200, 200, 220]    # grey fallback
+
 allmonths = []
 # ----------------------------
 # Data loading
 # ----------------------------
-@st.cache_data
+@st.cache_data(show_spinner=True)
 def load_data():
     """
-    Load patient, donor and shop datasets.
-    Convert Month_Year (MM/YYYY) → month_dt + YYYY-MM.
-    Keep only events from 2022 onward.
+    Load patient, donor and shop datasets + MSOA income parquet.
+    Precompute income colours and GeoJSON for pydeck.
     """
     patients = pd.read_csv("postcode_coordinates.csv")
     donors = pd.read_csv("donation_events_geocoded.csv")
     shops = pd.read_csv("shops_geocoded.csv")
-
+    
     # Normalise postcode column
     if "Postcode" in donors.columns and "postcode" not in donors.columns:
         donors.rename(columns={"Postcode": "postcode"}, inplace=True)
@@ -64,6 +89,18 @@ def load_data():
         )
     else:
         donors["Donation Amount"] = 0.0
+
+    # Normalise Source / Application
+    for col in donors.columns:
+        if col.lower() == "source":
+            donors.rename(columns={col: "Source"}, inplace=True)
+        if col.lower() == "application":
+            donors.rename(columns={col: "Application"}, inplace=True)
+
+    if "Source" not in donors.columns:
+        donors["Source"] = "Unknown"
+    if "Application" not in donors.columns:
+        donors["Application"] = "Unknown"
 
     # Extract postcode area
     for df in [patients, donors, shops]:
@@ -113,8 +150,6 @@ def login():
     st.title("🔐 Login")
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
-    username = "DirkHoffmann"  # For testing only; remove in production
-    password = "H0ffmann123"  # For testing only; remove in production
     if st.button("Login"):
         if username in st.secrets["users"] and st.secrets["users"][username] == password:
             st.session_state["logged_in"] = True
@@ -158,6 +193,11 @@ use_catchment = st.sidebar.checkbox(
     value=False
 )
 
+st.sidebar.subheader("📊 Differentiate Donor Sources")
+Differentiate_Donor_Sources = st.sidebar.checkbox(
+    "Differentiate Donor Sources on Map",
+    value=False
+)
 
 # Donation range
 st.sidebar.subheader("💷 Donation Amount Filter")
@@ -239,6 +279,7 @@ donor_summary = (
       .agg(
           total_events=("Total_Amount", "count"),
           max_donation=("Total_Amount", "max"),
+          total_donation=("Total_Amount", "sum"),
           donor_type=("Donor_Type", lambda x: ", ".join(sorted(set(x))))
       )
       .reset_index()
@@ -260,7 +301,7 @@ st.metric("Total Donations", f"£{de['Donation Amount'].sum():,.2f}")
 
 
 def create_pydeck_map(df_pat, df_don, df_shop, timeline_month=None,
-                      show_patients=True, show_donors=True, show_shops=True, map_style="mapbox://styles/mapbox/satellite-v9"):
+                      show_patients=True, show_donors=True, show_shops=True, map_style="mapbox://styles/mapbox/satellite-v9", differentiate_donor_sources=False):
 
 
     # Timeline filtering
@@ -289,11 +330,27 @@ def create_pydeck_map(df_pat, df_don, df_shop, timeline_month=None,
         df_don["kind"] = "Donor"
         df_don["extra"] = (
             "Donor Type: " + df_don["donor_type"].astype(str) +
-            "<br/>Max Donation: £" + df_don["max_donation"].round(2).astype(str) +
-            "<br/>Total Donations: " + df_don["total_events"].astype(int).astype(str) +
+            "<br/>Source: " + df_don["Source"].astype(str) +                                 
+            "<br/>Total Donation Amount: £" + df_don["total_donation"].round(2).astype(str) +
+            "<br/>Max Single Donation: £" + df_don["max_donation"].round(2).astype(str) +
+            "<br/>Number of Donations: " + df_don["total_events"].astype(int).astype(str) +
             "<br/>Latest Month: " + df_don["month"].astype(str) +
             "<br/>Latest Donation: £" + df_don["Donation Amount"].round(2).astype(str)
         )
+        
+    if differentiate_donor_sources:
+        # map sources to colours
+        df_don["color"] = df_don["Source"].map(DONATION_SOURCE_COLORS)
+
+        # fallback for unknown or missing sources
+        df_don["color"] = df_don["color"].apply(
+            lambda x: x if isinstance(x, list) else DEFAULT_SOURCE_COLOR
+        )
+    else:
+        # simple default colour (blue)
+        df_don["color"] = [[0, 128, 255, 200]] * len(df_don)
+
+
 
     # Shops
     if show_shops and not df_shop.empty:
@@ -337,7 +394,7 @@ def create_pydeck_map(df_pat, df_don, df_shop, timeline_month=None,
             data=df_don,
             get_position="[longitude, latitude]",
             get_radius=80,
-            get_fill_color=[0, 128, 255, 200],
+            get_fill_color="color",
             pickable=True
         ))
 
@@ -361,7 +418,7 @@ def create_pydeck_map(df_pat, df_don, df_shop, timeline_month=None,
             get_weight="Donation Amount",
             radiusPixels=60,
         ))
-
+        
     view_state = pdk.ViewState(
         latitude=center[0],
         longitude=center[1],
@@ -399,7 +456,8 @@ if show_timeline:
 else:
     timeline_month = None
 
-deck_map = create_pydeck_map(pf, de, shops, timeline_month, show_donors=show_donors, show_patients=show_patients, show_shops=show_shops, map_style=map_style_url)
+
+deck_map = create_pydeck_map(pf, de, shops, timeline_month, show_donors=show_donors, show_patients=show_patients, show_shops=show_shops, map_style=map_style_url, differentiate_donor_sources=Differentiate_Donor_Sources)
 
 # ----------------------------
 # UI + map

@@ -6,8 +6,8 @@ from pathlib import Path
 # ----------------------------
 # CONFIG
 # ----------------------------
-INPUT_FILE = "donation_events.csv"
-OUTPUT_FILE = "donation_events_geocoded.csv"
+INPUT_FILE = "donation_results_2.csv"
+OUTPUT_FILE = "donation_events_geocoded_2.csv"
 CACHE_FILE = "postcode_cache.csv"  # Stores all postcodes we've ever looked up
 
 def get_postcode_coordinates(postcode):
