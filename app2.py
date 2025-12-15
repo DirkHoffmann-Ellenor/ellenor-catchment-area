@@ -108,8 +108,8 @@ def load_data():
     donors = donors[donors["month_dt"] >= pd.Timestamp("2022-01-01")].copy()
 
     # Year + timeline key
-    donors["year"] = donors["month_dt"].dt.year
-    donors["month"] = donors["month_dt"].dt.to_period("M").astype(str)
+    donors["year"] = donors["month_dt"].dt.year  # type: ignore
+    donors["month"] = donors["month_dt"].dt.to_period("M").astype(str)  # type: ignore
 
     # Donation Amount
     if "Total_Amount" in donors.columns:
@@ -147,29 +147,24 @@ def load_data():
     donors["longitude"] = donors["longitude"].astype("float32")
     donors["Donation Amount"] = donors["Donation Amount"].astype("float32")
 
-    monthly = (
-        donors.groupby(["postcode", "month"], as_index=False)
-        .agg(
-            latitude=("latitude", "first"),
-            longitude=("longitude", "first"),
-            country=("country", "first"),
-            postcode_area=("postcode_area", "first"),
-            postcode_clean=("postcode_clean", "first"),
-            month_dt=("month_dt", "max"),
-            donation_sum=("Donation Amount", "sum"),
-            max_single=("Donation Amount", "max"),
-            events_in_month=("Donation Amount", "size"),
-            donor_type=("Donor_Type", _unique_join),
-            source_list=("Source", _collect_sources),
-        )
+    monthly = donors.groupby(["postcode", "month"], as_index=False).agg(
+        latitude=("latitude", "first"),
+        longitude=("longitude", "first"),
+        country=("country", "first"),
+        postcode_area=("postcode_area", "first"),
+        postcode_clean=("postcode_clean", "first"),
+        month_dt=("month_dt", "max"),
+        donation_sum=("Donation Amount", "sum"),
+        max_single=("Donation Amount", "max"),
+        events_in_month=("Donation Amount", "size"),
+        donor_type=("Donor_Type", _unique_join),
+        source_list=("Source", _collect_sources),
     )
 
     monthly["Donation Amount"] = monthly["donation_sum"].astype("float32")
     monthly["max_single_donation"] = monthly["max_single"].astype("float32")
     monthly.drop(columns=["donation_sum", "max_single"], inplace=True)
-    monthly["Source"] = monthly["source_list"].apply(
-        lambda vals: vals[0] if len(vals) == 1 else ("Multiple" if vals else "Unknown")
-    )
+    monthly["Source"] = monthly["source_list"].apply(lambda vals: vals[0] if len(vals) == 1 else ("Multiple" if vals else "Unknown"))
 
     patients["latitude"] = patients["latitude"].astype("float32")
     patients["longitude"] = patients["longitude"].astype("float32")
@@ -209,7 +204,7 @@ REGION_GROUPS = {
 # Login
 # ----------------------------
 def login():
-    st.title("🔐 Login - New")
+    st.title("🔐 Login - Newest")
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
     if st.button("Login"):
@@ -313,11 +308,7 @@ shops = apply_filters(shops)
 # ---- Aggregation for tooltip ----
 # Group donor events by postcode for the filtered time period
 def _format_source_names(codes):
-    readable = [
-        DONATION_SOURCE_LABELS.get(code, code)
-        for code in codes
-        if pd.notna(code) and str(code).strip()
-    ]
+    readable = [DONATION_SOURCE_LABELS.get(code, code) for code in codes if pd.notna(code) and str(code).strip()]
     return ", ".join(readable) if readable else "Unknown"
 
 
