@@ -11,8 +11,7 @@ DATA_DIR = Path(__file__).parent
 postcode_mapping = {
     "Kent": ["BR", "CT", "DA", "ME", "TN"],
     "Essex": ["CB", "CM", "CO", "EN", "IG", "RM", "SS"],
-    "London": ["BR", "CR", "DA", "E", "EC", "EN", "HA", "IG", "KT",
-               "N", "NW", "SE", "SM", "SW", "TW", "UB", "W", "WC", "WD"],
+    "London": ["BR", "CR", "DA", "E", "EC", "EN", "HA", "IG", "KT", "N", "NW", "SE", "SM", "SW", "TW", "UB", "W", "WC", "WD"],
     "Sussex": ["BN", "RH", "TN"],
     "Surrey": ["CR", "GU", "KT", "RH", "SM", "SW", "TW"],
 }
@@ -43,7 +42,7 @@ def extract_prefix(postcode: str) -> str:
     pc = postcode.strip().upper()
     # outward code = letters at start until digit
     m = re.match(r"^[A-Z]+", pc)
-    return m.group(0) if m else None
+    return m.group(0) if m else None  # type: ignore
 
 
 if __name__ == "__main__":
@@ -61,20 +60,21 @@ if __name__ == "__main__":
     filtered_pc = postcode_df[postcode_df["prefix"].isin(ALLOWED_PREFIXES)].copy()
 
     # Keep only useful columns
-    filtered_pc = filtered_pc[[
-        "pcd", "lat", "long", "msoa11"
-    ]]
+    filtered_pc = filtered_pc[["pcd", "lat", "long", "msoa11"]]
 
     # ---------------------------------------------------
     # Prepare income dataframe
     # ---------------------------------------------------
-    income_df.rename(columns={
-        income_df.columns[0]: "msoa11",  # MSOA code
-        income_df.columns[1]: "msoa_name",
-        income_df.columns[2]: "la_code",
-        income_df.columns[3]: "la_name",
-        income_df.columns[6]: "total_income"
-    }, inplace=True)
+    income_df.rename(
+        columns={
+            income_df.columns[0]: "msoa11",  # MSOA code
+            income_df.columns[1]: "msoa_name",
+            income_df.columns[2]: "la_code",
+            income_df.columns[3]: "la_name",
+            income_df.columns[6]: "total_income",
+        },
+        inplace=True,
+    )
 
     # ---------------------------------------------------
     # Merge postcode-level location data with MSOA income

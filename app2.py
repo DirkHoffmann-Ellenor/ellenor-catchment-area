@@ -1,16 +1,35 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import pydeck as pdk
+from pathlib import Path
 
 from data_pipeline import load_processed_data
 
 # Keep imports lean; heavy GIS libs slow Streamlit boot time.
+
+
+def _metric_to_color(value, min_value, max_value):
+    if pd.isna(value):
+        return [180, 180, 180, 60]
+    if max_value == min_value:
+        ratio = 0.5
+    else:
+        ratio = (value - min_value) / (max_value - min_value)
+        ratio = max(0.0, min(1.0, float(ratio)))
+    red = int(255 * ratio)
+    blue = int(255 * (1 - ratio))
+    return [red, 80, blue, 160]
+
 
 # ----------------------------
 # Page config
 # ----------------------------
 st.set_page_config(page_title="Postcode Coverage Map", layout="wide")
 st.title("ellenor Data Map Explorer")
+st.subheader("Long Loading Time are expected on First Load due to large data processing")
+
+OVERLAY_HTML_FILE = Path(__file__).with_name("uk_income_map_mapbox.html")
 
 CATCHMENT_EAST = ["DA3", "DA11", "DA12", "DA13", "TN15"]
 
@@ -87,7 +106,14 @@ def load_data():
     return load_processed_data()
 
 
-patients, donors_unique, donor_events, shops = load_data()
+@st.cache_data(show_spinner=False)
+def load_overlay_html(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+patients, donors_unique, donor_events, shops, area_income = load_data()
 
 all_months = sorted(donor_events["month"].unique())
 
@@ -184,12 +210,47 @@ selected_style = st.sidebar.selectbox("Choose map style:", options=list(map_styl
 map_style_url = map_styles[selected_style]
 
 # Country
-country_all = sorted(set(patients["country"].dropna()) | set(donors_unique["country"].dropna()) | set(donor_events["country"].dropna()))
+income_countries = set(area_income["country"].dropna()) if (not area_income.empty and "country" in area_income.columns) else {"England"}
+country_all = sorted(set(patients["country"].dropna()) | set(donors_unique["country"].dropna()) | set(donor_events["country"].dropna()) | income_countries)
 country_filter = st.sidebar.multiselect("Country:", country_all, default=country_all)
 
 # Region → postcode areas
 region_filter = st.sidebar.multiselect("UK Region:", list(REGION_GROUPS.keys()), default=list(REGION_GROUPS.keys()))
 allowed_postcode_areas = [x for r in region_filter for x in REGION_GROUPS[r]]
+
+area_layer_available = not area_income.empty
+show_area_layer = False
+area_metric = None
+area_metric_label = ""
+area_metric_unit = ""
+
+if area_layer_available:
+    st.sidebar.subheader("🏘️ Income & Age Overlay")
+    metric_options = []
+    if "net_income" in area_income.columns:
+        metric_options.append(("net_income", "Net annual income (£)", "£"))
+    if "total_population" in area_income.columns:
+        metric_options.append(("total_population", "Total population", "people"))
+
+    for col in area_income.columns:
+        lower = col.lower()
+        if lower.startswith("age"):
+            label = col.replace("_", " ").replace("pct", "%").title()
+            unit = "%"
+            if not lower.endswith("pct"):
+                unit = "people"
+            metric_options.append((col, label, unit))
+
+    if metric_options:
+        show_area_layer = st.sidebar.checkbox("Show demographic overlay", value=False)
+        metric_labels = [label for _, label, _ in metric_options]
+        selected_label = st.sidebar.selectbox("Metric to colour by:", metric_labels, index=0)
+        selected = next(item for item in metric_options if item[1] == selected_label)
+        area_metric, area_metric_label, area_metric_unit = selected
+    else:
+        st.sidebar.info("Income dataset loaded but no numeric metrics available.")
+else:
+    st.sidebar.info("Add Postcode_Income_Filtered.csv to enable area overlays.")
 
 # Allow manual rebuild when CSVs change
 if st.sidebar.button("♻️ Rebuild data cache"):
@@ -220,6 +281,7 @@ def apply_filters(df):
 pf = apply_filters(patients)
 de = apply_filters(donor_events)
 shops = apply_filters(shops)
+area_filtered = apply_filters(area_income)
 
 
 # ---- Aggregation for tooltip ----
@@ -288,9 +350,33 @@ show_timeline = not st.sidebar.checkbox("Show all donors at once (hide timeline)
 st.markdown("### 📊 Donation Summary")
 st.metric("Total Donations", f"£{de['Donation Amount'].sum():,.2f}")
 
+if show_area_layer and area_metric and not area_filtered.empty and area_metric in area_filtered.columns:
+    metric_vals = pd.to_numeric(area_filtered[area_metric], errors="coerce").dropna()
+    if not metric_vals.empty:
+        if area_metric_unit == "£":
+            formatted = f"£{metric_vals.median():,.0f}"
+        elif area_metric_unit == "%":
+            formatted = f"{metric_vals.median():.1f}%"
+        else:
+            formatted = f"{metric_vals.median():,.0f}"
+        st.metric(f"{area_metric_label} (median in filters)", formatted)
+
 
 def create_pydeck_map(
-    df_pat, df_don, df_shop, timeline_month=None, show_patients=True, show_donors=True, show_shops=True, map_style="mapbox://styles/mapbox/satellite-v9", differentiate_donor_sources=False
+    df_pat,
+    df_don,
+    df_shop,
+    df_area,
+    timeline_month=None,
+    show_patients=True,
+    show_donors=True,
+    show_shops=True,
+    show_area_layer=False,
+    area_metric=None,
+    area_metric_label="",
+    area_metric_unit="",
+    map_style="mapbox://styles/mapbox/satellite-v9",
+    differentiate_donor_sources=False,
 ):
 
     # Timeline filtering
@@ -301,6 +387,7 @@ def create_pydeck_map(
     df_pat = df_pat.copy()
     df_don = df_don.copy()
     df_shop = df_shop.copy()
+    df_area = df_area.copy()
 
     if show_donors and not df_don.empty:
         df_don = aggregate_donors_for_map(df_don)
@@ -345,6 +432,24 @@ def create_pydeck_map(
         df_shop["kind"] = "Shop"
         df_shop["extra"] = "Name: " + df_shop["name"].astype(str)
 
+    if show_area_layer and area_metric and not df_area.empty and area_metric in df_area.columns:
+        df_area = df_area[df_area["latitude"].notna() & df_area["longitude"].notna()].copy()
+        if not df_area.empty:
+            df_area["metric_value"] = pd.to_numeric(df_area[area_metric], errors="coerce")
+            if df_area["metric_value"].notna().sum() == 0:
+                show_area_layer = False
+            else:
+                min_val = float(df_area["metric_value"].min())
+                max_val = float(df_area["metric_value"].max())
+                df_area["color"] = df_area["metric_value"].apply(lambda v: _metric_to_color(v, min_val, max_val))
+                metric_prefix = area_metric_label or area_metric
+                unit_prefix = area_metric_unit if area_metric_unit and area_metric_unit not in ("people", "count") else ""
+                df_area["kind"] = "Area demographics"
+                df_area["extra"] = metric_prefix + ": " + (unit_prefix if unit_prefix and unit_prefix != "%" else "") + df_area["metric_value"].round(2).astype(str)
+                if unit_prefix == "%":
+                    df_area["extra"] = metric_prefix + ": " + df_area["metric_value"].round(2).astype(str) + "%"
+                df_area["extra"] = df_area["extra"] + "<br/>Area: " + df_area.get("area_label", df_area.get("postcode_area", "Unknown")).astype(str)
+
     # Combine coords to find centre (only include visible layers)
     coord_frames = []
     if show_patients and not df_pat.empty:
@@ -353,6 +458,8 @@ def create_pydeck_map(
         coord_frames.append(df_don[["latitude", "longitude"]])
     if show_shops and not df_shop.empty:
         coord_frames.append(df_shop[["latitude", "longitude"]])
+    if show_area_layer and not df_area.empty and area_metric:
+        coord_frames.append(df_area[["latitude", "longitude"]])
 
     if not coord_frames:
         return None
@@ -376,6 +483,19 @@ def create_pydeck_map(
     # Shops
     if show_shops and not df_shop.empty:
         layers.append(pdk.Layer("ScatterplotLayer", data=df_shop, get_position="[longitude, latitude]", get_radius=100, get_fill_color=[0, 255, 0, 180], pickable=True))
+
+    if show_area_layer and not df_area.empty and area_metric:
+        layers.append(
+            pdk.Layer(
+                "ScatterplotLayer",
+                data=df_area,
+                get_position="[longitude, latitude]",
+                get_radius=200,
+                get_fill_color="color",
+                pickable=True,
+                opacity=0.5,
+            )
+        )
 
     # Heatmap (donors)
     if show_donors and not df_don.empty:
@@ -422,7 +542,20 @@ if show_timeline:
 
 
 deck_map = create_pydeck_map(
-    pf, de, shops, timeline_month, show_donors=show_donors, show_patients=show_patients, show_shops=show_shops, map_style=map_style_url, differentiate_donor_sources=Differentiate_Donor_Sources
+    pf,
+    de,
+    shops,
+    area_filtered,
+    timeline_month,
+    show_donors=show_donors,
+    show_patients=show_patients,
+    show_shops=show_shops,
+    show_area_layer=show_area_layer,
+    area_metric=area_metric,
+    area_metric_label=area_metric_label,
+    area_metric_unit=area_metric_unit,
+    map_style=map_style_url,
+    differentiate_donor_sources=Differentiate_Donor_Sources,
 )
 
 # ----------------------------
@@ -432,6 +565,14 @@ if deck_map:
     st.pydeck_chart(deck_map, height=800)
 else:
     st.warning("No data to show — adjust filters.")
+
+overlay_html = load_overlay_html(OVERLAY_HTML_FILE)
+if overlay_html:
+    st.subheader("Income & Age Overlay")
+    st.caption("This saved Folium map shows the pre-rendered population and age overlays you built previously.")
+    components.html(overlay_html, height=900, scrolling=True)
+else:
+    st.warning(f"Overlay file not found at {OVERLAY_HTML_FILE}.")
 
 # ----------------------------
 # Download section

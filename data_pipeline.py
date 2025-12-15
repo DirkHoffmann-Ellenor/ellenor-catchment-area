@@ -1,6 +1,6 @@
 import argparse
 from pathlib import Path
-from typing import Tuple
+from typing import Dict, Tuple
 
 import pandas as pd
 
@@ -14,11 +14,14 @@ RAW_FILES = {
     "shops": BASE_DIR / "shops_geocoded.csv",
 }
 
+AREA_INCOME_FILE = BASE_DIR / "Postcode_Income_Filtered.csv"
+
 CACHE_FILES = {
     "patients": CACHE_DIR / "patients.parquet",
     "donors_unique": CACHE_DIR / "donors_unique.parquet",
     "donor_events": CACHE_DIR / "donor_events.parquet",
     "shops": CACHE_DIR / "shops.parquet",
+    "area_income": CACHE_DIR / "area_income.parquet",
 }
 
 
@@ -144,15 +147,86 @@ def _normalise_dataframes() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, p
     return patients, donors_unique, monthly, shops
 
 
-def write_cache() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def _load_area_income() -> pd.DataFrame:
+    """Bring in postcode-level income/age data if provided."""
+    if not AREA_INCOME_FILE.exists():
+        return pd.DataFrame(
+            columns=[
+                "postcode",
+                "latitude",
+                "longitude",
+                "postcode_area",
+                "postcode_clean",
+                "country",
+                "net_income",
+            ]
+        )
+
+    df = pd.read_csv(AREA_INCOME_FILE)
+    rename_map = {}
+    if "pcd" in df.columns:
+        rename_map["pcd"] = "postcode"
+    if "lat" in df.columns:
+        rename_map["lat"] = "latitude"
+    if "long" in df.columns:
+        rename_map["long"] = "longitude"
+    df.rename(columns=rename_map, inplace=True)
+
+    required = ["postcode", "latitude", "longitude"]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(f"Income dataset is missing required columns: {missing}")
+
+    df["postcode"] = df["postcode"].astype(str).str.strip().str.upper()
+    df["postcode_area"] = df["postcode"].str.extract(r"^([A-Z]{1,2})")
+    df["postcode_clean"] = df["postcode"].str.replace(r"\s+", "", regex=True)
+    df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
+    df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
+    df["country"] = df.get("country", "England").fillna("England")
+
+    income_col = None
+    for candidate in ("net_income", "total_income", "Net annual income (£)"):
+        if candidate in df.columns:
+            income_col = candidate
+            break
+    if income_col:
+        df["net_income"] = pd.to_numeric(df[income_col], errors="coerce")
+    else:
+        df["net_income"] = pd.NA
+
+    age_cols = [col for col in df.columns if "age" in col.lower()]
+    for col in age_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    label_fields = ["msoa_name", "MSOA21NM", "la_name"]
+    df["area_label"] = None
+    for field in label_fields:
+        if field in df.columns:
+            df["area_label"] = df["area_label"].fillna(df[field].astype(str))
+    df["area_label"] = df["area_label"].fillna(df["postcode_area"])
+
+    return df
+
+
+def write_cache() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Build processed Parquet files so Streamlit can load them instantly."""
-    datasets = _normalise_dataframes()
-    for key, df in zip(CACHE_FILES.keys(), datasets):
+    patients, donors_unique, monthly, shops = _normalise_dataframes()
+    area_income = _load_area_income()
+
+    datasets: Dict[str, pd.DataFrame] = {
+        "patients": patients,
+        "donors_unique": donors_unique,
+        "donor_events": monthly,
+        "shops": shops,
+        "area_income": area_income,
+    }
+
+    for key, df in datasets.items():
         df.to_parquet(CACHE_FILES[key], index=False)
-    return datasets
+    return patients, donors_unique, monthly, shops, area_income
 
 
-def load_processed_data(force_rebuild: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def load_processed_data(force_rebuild: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Load pre-processed data, rebuilding if the cache is missing or requested."""
     if not force_rebuild and all(path.exists() for path in CACHE_FILES.values()):
         return tuple(pd.read_parquet(path) for path in CACHE_FILES.values())  # type: ignore
