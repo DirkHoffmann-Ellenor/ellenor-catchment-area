@@ -1,8 +1,16 @@
-import streamlit as st
+from pathlib import Path
+
 import pandas as pd
 import pydeck as pdk
+import streamlit as st
+
+from data_pipeline import prepare_donor_events
 
 # Keep imports lean; heavy GIS libs slow Streamlit boot time.
+
+DATA_DIR = Path("data")
+DONOR_PARQUET_PATH = DATA_DIR / "donor_events_optimised.parquet"
+DONOR_CSV_PATH = Path("donation_events_geocoded.csv")
 
 # ----------------------------
 # Page config
@@ -61,63 +69,52 @@ DONATION_SOURCE_COLORS = {
 DEFAULT_SOURCE_COLOR = [200, 200, 200, 220]  # grey fallback
 
 
+def _normalise_postcode_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure postcode-based frames share the same schema."""
+    cleaned = df.copy()
+    if "postcode" not in cleaned.columns and "Postcode" in cleaned.columns:
+        cleaned.rename(columns={"Postcode": "postcode"}, inplace=True)
+
+    if "postcode" in cleaned.columns:
+        cleaned["postcode"] = cleaned["postcode"].astype(str).str.strip().str.upper()
+        cleaned["postcode_area"] = cleaned["postcode"].str.extract(r"^([A-Z]{1,2})")
+        cleaned["postcode_clean"] = cleaned["postcode"].str.replace(r"\s+", "", regex=True)
+
+    if "country" in cleaned.columns:
+        cleaned["country"] = cleaned["country"].fillna("Unknown")
+    else:
+        cleaned["country"] = "Unknown"
+
+    return cleaned
+
+
+def load_donor_events() -> pd.DataFrame:
+    """Load donor events from the light-weight parquet cache when present."""
+    if DONOR_PARQUET_PATH.exists():
+        donors = pd.read_parquet(DONOR_PARQUET_PATH)
+    else:
+        donors_raw = pd.read_csv(DONOR_CSV_PATH)
+        donors = prepare_donor_events(donors_raw)
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            donors.to_parquet(DONOR_PARQUET_PATH, index=False)
+        except Exception as exc:
+            # Writing to disk is a best-effort optimisation; continue even if it fails.
+            print(f"Warning: could not persist donor parquet - {exc}")
+
+    donors["month_dt"] = pd.to_datetime(donors["month_dt"])
+    return donors
+
+
 # ----------------------------
 # Data loading
 # ----------------------------
 @st.cache_data(show_spinner=True)
 def load_data():
     """Load raw CSVs once and perform expensive normalization up-front."""
-    patients = pd.read_csv("postcode_coordinates.csv")
-    donors = pd.read_csv("donation_events_geocoded.csv")
-    shops = pd.read_csv("shops_geocoded.csv")
-
-    # Normalise postcode column
-    if "Postcode" in donors.columns and "postcode" not in donors.columns:
-        donors.rename(columns={"Postcode": "postcode"}, inplace=True)
-
-    # Parse Month_Year = "MM/YYYY"
-    donors["Month_Year"] = donors["Month_Year"].astype(str)
-    donors["month_dt"] = pd.to_datetime(donors["Month_Year"], format="%m/%Y", errors="coerce")
-    donors = donors[donors["month_dt"].notna()].copy()
-
-    # Filter to 2022+
-    donors = donors[donors["month_dt"] >= pd.Timestamp("2022-01-01")].copy()
-
-    # Year + timeline key
-    donors["year"] = donors["month_dt"].dt.year
-    donors["month"] = donors["month_dt"].dt.to_period("M").astype(str)
-
-    # Donation Amount
-    if "Total_Amount" in donors.columns:
-        donors["Donation Amount"] = donors["Total_Amount"].astype(str).str.replace(r"[£,]", "", regex=True).astype(float).fillna(0.0)
-    else:
-        donors["Donation Amount"] = 0.0
-
-    # Normalise Source / Application
-    for col in donors.columns:
-        if col.lower() == "source":
-            donors.rename(columns={col: "Source"}, inplace=True)
-        if col.lower() == "application":
-            donors.rename(columns={col: "Application"}, inplace=True)
-
-    if "Source" not in donors.columns:
-        donors["Source"] = "Unknown"
-    if "Application" not in donors.columns:
-        donors["Application"] = "Unknown"
-
-    # Extract postcode area + cached cleaned postcode (used repeatedly in filters)
-    for df in [patients, donors, shops]:
-        if "postcode" not in df.columns and "Postcode" in df.columns:
-            df.rename(columns={"Postcode": "postcode"}, inplace=True)
-
-        df["postcode"] = df["postcode"].astype(str).str.strip()
-        df["postcode_area"] = df["postcode"].str.extract(r"^([A-Z]{1,2})")
-        df["postcode_clean"] = df["postcode"].str.upper().str.replace(r"\s+", "", regex=True)
-
-        if "country" in df.columns:
-            df["country"] = df["country"].fillna("Unknown")
-        else:
-            df["country"] = "Unknown"
+    patients = _normalise_postcode_frame(pd.read_csv("postcode_coordinates.csv"))
+    donors = load_donor_events()
+    shops = _normalise_postcode_frame(pd.read_csv("shops_geocoded.csv"))
 
     # Unique donor postcodes
     donors_unique = donors[["postcode", "latitude", "longitude", "country", "postcode_area"]].dropna(subset=["latitude", "longitude"]).drop_duplicates(subset=["postcode"]).reset_index(drop=True)
@@ -256,11 +253,7 @@ shops = apply_filters(shops)
 # ---- Aggregation for tooltip ----
 # Group donor events by postcode for the filtered time period
 def _format_source_names(codes):
-    readable = [
-        DONATION_SOURCE_LABELS.get(code, code)
-        for code in codes
-        if pd.notna(code) and str(code).strip()
-    ]
+    readable = [DONATION_SOURCE_LABELS.get(code, code) for code in codes if pd.notna(code) and str(code).strip()]
     return ", ".join(readable) if readable else "Unknown"
 
 
