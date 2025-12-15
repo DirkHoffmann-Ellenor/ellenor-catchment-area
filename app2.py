@@ -1,6 +1,7 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
+import numpy as np
 import pydeck as pdk
 from pathlib import Path
 
@@ -92,8 +93,11 @@ def _collect_sources(values):
     for item in values:
         if isinstance(item, (list, tuple)):
             flattened.extend(item)
-        elif pd.notna(item) and str(item).strip():
-            flattened.append(str(item).strip())
+        elif isinstance(item, np.ndarray):
+            flattened.extend(item.tolist())
+        else:
+            if pd.notna(item) and str(item).strip():
+                flattened.append(str(item).strip())
     return sorted({code for code in flattened if code})
 
 
