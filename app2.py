@@ -61,15 +61,39 @@ DONATION_SOURCE_COLORS = {
 DEFAULT_SOURCE_COLOR = [200, 200, 200, 220]  # grey fallback
 
 
+def _unique_join(values):
+    cleaned = sorted({str(v).strip() for v in values if pd.notna(v) and str(v).strip()})
+    return ", ".join(cleaned) if cleaned else "Unknown"
+
+
+def _collect_sources(values):
+    flattened = []
+    for item in values:
+        if isinstance(item, (list, tuple)):
+            flattened.extend(item)
+        elif pd.notna(item) and str(item).strip():
+            flattened.append(str(item).strip())
+    return tuple(sorted({code for code in flattened if code}))
+
+
 # ----------------------------
 # Data loading
 # ----------------------------
 @st.cache_data(show_spinner=True)
 def load_data():
     """Load raw CSVs once and perform expensive normalization up-front."""
-    patients = pd.read_csv("postcode_coordinates.csv")
-    donors = pd.read_csv("donation_events_geocoded.csv")
-    shops = pd.read_csv("shops_geocoded.csv")
+    patients = pd.read_csv(
+        "postcode_coordinates.csv",
+        usecols=["postcode", "latitude", "longitude", "admin_district", "admin_county", "country"],
+    )
+    donors = pd.read_csv(
+        "donation_events_geocoded.csv",
+        usecols=["Month_Year", "Postcode", "Donor_Type", "Total_Amount", "Source", "Application", "latitude", "longitude", "country"],
+    )
+    shops = pd.read_csv(
+        "shops_geocoded.csv",
+        usecols=["postcode", "latitude", "longitude", "admin_district", "admin_county", "country", "name"],
+    )
 
     # Normalise postcode column
     if "Postcode" in donors.columns and "postcode" not in donors.columns:
@@ -119,10 +143,43 @@ def load_data():
         else:
             df["country"] = "Unknown"
 
-    # Unique donor postcodes
-    donors_unique = donors[["postcode", "latitude", "longitude", "country", "postcode_area"]].dropna(subset=["latitude", "longitude"]).drop_duplicates(subset=["postcode"]).reset_index(drop=True)
+    donors["latitude"] = donors["latitude"].astype("float32")
+    donors["longitude"] = donors["longitude"].astype("float32")
+    donors["Donation Amount"] = donors["Donation Amount"].astype("float32")
 
-    return patients, donors_unique, donors, shops
+    monthly = (
+        donors.groupby(["postcode", "month"], as_index=False)
+        .agg(
+            latitude=("latitude", "first"),
+            longitude=("longitude", "first"),
+            country=("country", "first"),
+            postcode_area=("postcode_area", "first"),
+            postcode_clean=("postcode_clean", "first"),
+            month_dt=("month_dt", "max"),
+            donation_sum=("Donation Amount", "sum"),
+            max_single=("Donation Amount", "max"),
+            events_in_month=("Donation Amount", "size"),
+            donor_type=("Donor_Type", _unique_join),
+            source_list=("Source", _collect_sources),
+        )
+    )
+
+    monthly["Donation Amount"] = monthly["donation_sum"].astype("float32")
+    monthly["max_single_donation"] = monthly["max_single"].astype("float32")
+    monthly.drop(columns=["donation_sum", "max_single"], inplace=True)
+    monthly["Source"] = monthly["source_list"].apply(
+        lambda vals: vals[0] if len(vals) == 1 else ("Multiple" if vals else "Unknown")
+    )
+
+    patients["latitude"] = patients["latitude"].astype("float32")
+    patients["longitude"] = patients["longitude"].astype("float32")
+    shops["latitude"] = shops["latitude"].astype("float32")
+    shops["longitude"] = shops["longitude"].astype("float32")
+
+    # Unique donor postcodes sourced from the aggregated monthly view
+    donors_unique = monthly[["postcode", "latitude", "longitude", "country", "postcode_area"]].dropna(subset=["latitude", "longitude"]).drop_duplicates(subset=["postcode"]).reset_index(drop=True)
+
+    return patients, donors_unique, monthly, shops
 
 
 patients, donors_unique, donor_events, shops = load_data()
@@ -291,11 +348,11 @@ def aggregate_donors_for_map(df: pd.DataFrame) -> pd.DataFrame:
         longitude=("longitude", "first"),
         country=("country", "first"),
         postcode_area=("postcode_area", "first"),
-        donor_type=("Donor_Type", _unique_join),
-        source_list=("Source", lambda x: sorted({str(v) for v in x if pd.notna(v) and str(v).strip()})),
+        donor_type=("donor_type", _unique_join),
+        source_list=("source_list", _collect_sources),
         total_donation=("Donation Amount", "sum"),
-        max_donation=("Donation Amount", "max"),
-        total_events=("Donation Amount", "size"),
+        max_donation=("max_single_donation", "max"),
+        total_events=("events_in_month", "sum"),
     )
 
     grouped = grouped.merge(latest, on="postcode", how="left")
