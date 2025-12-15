@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import pydeck as pdk
 
+from data_pipeline import load_processed_data
+
 # Keep imports lean; heavy GIS libs slow Streamlit boot time.
 
 # ----------------------------
@@ -81,100 +83,8 @@ def _collect_sources(values):
 # ----------------------------
 @st.cache_data(show_spinner=True)
 def load_data():
-    """Load raw CSVs once and perform expensive normalization up-front."""
-    patients = pd.read_csv(
-        "postcode_coordinates.csv",
-        usecols=["postcode", "latitude", "longitude", "admin_district", "admin_county", "country"],
-    )
-    donors = pd.read_csv(
-        "donation_events_geocoded.csv",
-        usecols=["Month_Year", "Postcode", "Donor_Type", "Total_Amount", "Source", "Application", "latitude", "longitude", "country"],
-    )
-    shops = pd.read_csv(
-        "shops_geocoded.csv",
-        usecols=["postcode", "latitude", "longitude", "admin_district", "admin_county", "country", "name"],
-    )
-
-    # Normalise postcode column
-    if "Postcode" in donors.columns and "postcode" not in donors.columns:
-        donors.rename(columns={"Postcode": "postcode"}, inplace=True)
-
-    # Parse Month_Year = "MM/YYYY"
-    donors["Month_Year"] = donors["Month_Year"].astype(str)
-    donors["month_dt"] = pd.to_datetime(donors["Month_Year"], format="%m/%Y", errors="coerce")
-    donors = donors[donors["month_dt"].notna()].copy()
-
-    # Filter to 2022+
-    donors = donors[donors["month_dt"] >= pd.Timestamp("2022-01-01")].copy()
-
-    # Year + timeline key
-    donors["year"] = donors["month_dt"].dt.year  # type: ignore
-    donors["month"] = donors["month_dt"].dt.to_period("M").astype(str)  # type: ignore
-
-    # Donation Amount
-    if "Total_Amount" in donors.columns:
-        donors["Donation Amount"] = donors["Total_Amount"].astype(str).str.replace(r"[£,]", "", regex=True).astype(float).fillna(0.0)
-    else:
-        donors["Donation Amount"] = 0.0
-
-    # Normalise Source / Application
-    for col in donors.columns:
-        if col.lower() == "source":
-            donors.rename(columns={col: "Source"}, inplace=True)
-        if col.lower() == "application":
-            donors.rename(columns={col: "Application"}, inplace=True)
-
-    if "Source" not in donors.columns:
-        donors["Source"] = "Unknown"
-    if "Application" not in donors.columns:
-        donors["Application"] = "Unknown"
-
-    # Extract postcode area + cached cleaned postcode (used repeatedly in filters)
-    for df in [patients, donors, shops]:
-        if "postcode" not in df.columns and "Postcode" in df.columns:
-            df.rename(columns={"Postcode": "postcode"}, inplace=True)
-
-        df["postcode"] = df["postcode"].astype(str).str.strip()
-        df["postcode_area"] = df["postcode"].str.extract(r"^([A-Z]{1,2})")
-        df["postcode_clean"] = df["postcode"].str.upper().str.replace(r"\s+", "", regex=True)
-
-        if "country" in df.columns:
-            df["country"] = df["country"].fillna("Unknown")
-        else:
-            df["country"] = "Unknown"
-
-    donors["latitude"] = donors["latitude"].astype(float)
-    donors["longitude"] = donors["longitude"].astype(float)
-    donors["Donation Amount"] = donors["Donation Amount"].astype(float)
-
-    monthly = donors.groupby(["postcode", "month"], as_index=False).agg(
-        latitude=("latitude", "first"),
-        longitude=("longitude", "first"),
-        country=("country", "first"),
-        postcode_area=("postcode_area", "first"),
-        postcode_clean=("postcode_clean", "first"),
-        month_dt=("month_dt", "max"),
-        donation_sum=("Donation Amount", "sum"),
-        max_single=("Donation Amount", "max"),
-        events_in_month=("Donation Amount", "size"),
-        donor_type=("Donor_Type", _unique_join),
-        source_list=("Source", _collect_sources),
-    )
-
-    monthly["Donation Amount"] = monthly["donation_sum"].astype(float)
-    monthly["max_single_donation"] = monthly["max_single"].astype(float)
-    monthly.drop(columns=["donation_sum", "max_single"], inplace=True)
-    monthly["Source"] = monthly["source_list"].apply(lambda vals: vals[0] if len(vals) == 1 else ("Multiple" if vals else "Unknown"))
-
-    patients["latitude"] = patients["latitude"].astype(float)
-    patients["longitude"] = patients["longitude"].astype(float)
-    shops["latitude"] = shops["latitude"].astype(float)
-    shops["longitude"] = shops["longitude"].astype(float)
-
-    # Unique donor postcodes sourced from the aggregated monthly view
-    donors_unique = monthly[["postcode", "latitude", "longitude", "country", "postcode_area"]].dropna(subset=["latitude", "longitude"]).drop_duplicates(subset=["postcode"]).reset_index(drop=True)
-
-    return patients, donors_unique, monthly, shops
+    """Load pre-processed Parquet files (fallback to CSV processing if needed)."""
+    return load_processed_data()
 
 
 patients, donors_unique, donor_events, shops = load_data()
@@ -280,6 +190,13 @@ country_filter = st.sidebar.multiselect("Country:", country_all, default=country
 # Region → postcode areas
 region_filter = st.sidebar.multiselect("UK Region:", list(REGION_GROUPS.keys()), default=list(REGION_GROUPS.keys()))
 allowed_postcode_areas = [x for r in region_filter for x in REGION_GROUPS[r]]
+
+# Allow manual rebuild when CSVs change
+if st.sidebar.button("♻️ Rebuild data cache"):
+    load_data.clear()
+    load_processed_data(force_rebuild=True)
+    st.sidebar.success("Cache rebuilt — reloading app.")
+    st.rerun()
 
 
 def apply_filters(df):
