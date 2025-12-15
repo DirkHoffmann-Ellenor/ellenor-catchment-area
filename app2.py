@@ -73,7 +73,7 @@ def _collect_sources(values):
             flattened.extend(item)
         elif pd.notna(item) and str(item).strip():
             flattened.append(str(item).strip())
-    return tuple(sorted({code for code in flattened if code}))
+    return sorted({code for code in flattened if code})
 
 
 # ----------------------------
@@ -143,9 +143,9 @@ def load_data():
         else:
             df["country"] = "Unknown"
 
-    donors["latitude"] = donors["latitude"].astype("float32")
-    donors["longitude"] = donors["longitude"].astype("float32")
-    donors["Donation Amount"] = donors["Donation Amount"].astype("float32")
+    donors["latitude"] = donors["latitude"].astype(float)
+    donors["longitude"] = donors["longitude"].astype(float)
+    donors["Donation Amount"] = donors["Donation Amount"].astype(float)
 
     monthly = donors.groupby(["postcode", "month"], as_index=False).agg(
         latitude=("latitude", "first"),
@@ -161,15 +161,15 @@ def load_data():
         source_list=("Source", _collect_sources),
     )
 
-    monthly["Donation Amount"] = monthly["donation_sum"].astype("float32")
-    monthly["max_single_donation"] = monthly["max_single"].astype("float32")
+    monthly["Donation Amount"] = monthly["donation_sum"].astype(float)
+    monthly["max_single_donation"] = monthly["max_single"].astype(float)
     monthly.drop(columns=["donation_sum", "max_single"], inplace=True)
     monthly["Source"] = monthly["source_list"].apply(lambda vals: vals[0] if len(vals) == 1 else ("Multiple" if vals else "Unknown"))
 
-    patients["latitude"] = patients["latitude"].astype("float32")
-    patients["longitude"] = patients["longitude"].astype("float32")
-    shops["latitude"] = shops["latitude"].astype("float32")
-    shops["longitude"] = shops["longitude"].astype("float32")
+    patients["latitude"] = patients["latitude"].astype(float)
+    patients["longitude"] = patients["longitude"].astype(float)
+    shops["latitude"] = shops["latitude"].astype(float)
+    shops["longitude"] = shops["longitude"].astype(float)
 
     # Unique donor postcodes sourced from the aggregated monthly view
     donors_unique = monthly[["postcode", "latitude", "longitude", "country", "postcode_area"]].dropna(subset=["latitude", "longitude"]).drop_duplicates(subset=["postcode"]).reset_index(drop=True)
@@ -339,7 +339,7 @@ def aggregate_donors_for_map(df: pd.DataFrame) -> pd.DataFrame:
         longitude=("longitude", "first"),
         country=("country", "first"),
         postcode_area=("postcode_area", "first"),
-        donor_type=("donor_type", _unique_join),
+        donor_type=("donor_type", "last"),
         source_list=("source_list", _collect_sources),
         total_donation=("Donation Amount", "sum"),
         max_donation=("max_single_donation", "max"),
