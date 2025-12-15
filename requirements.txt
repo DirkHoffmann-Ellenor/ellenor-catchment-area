@@ -67,3 +67,4 @@ watchdog==6.0.0
 wcwidth==0.2.14
 xlrd==2.0.2
 xyzservices==2025.10.0
+
