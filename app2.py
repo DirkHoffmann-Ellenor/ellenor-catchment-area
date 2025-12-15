@@ -1,9 +1,8 @@
 import streamlit as st
 import pandas as pd
 import pydeck as pdk
-from datetime import datetime
-import geopandas as gpd
-import json
+
+# Keep imports lean; heavy GIS libs slow Streamlit boot time.
 
 # ----------------------------
 # Page config
@@ -11,57 +10,67 @@ import json
 st.set_page_config(page_title="Postcode Coverage Map", layout="wide")
 st.title("ellenor Data Map Explorer")
 
-CATCHMENT_EAST = [
-    "DA3", "DA11", "DA12", "DA13", "TN15"
-]
+CATCHMENT_EAST = ["DA3", "DA11", "DA12", "DA13", "TN15"]
 
-CATCHMENT_WEST = [
-    "DA1", "DA2",
-    "DA4", "DA5", "DA6", "DA7", "DA8", "DA9", "DA10",
-    "DA14", "DA15", "DA16", "DA17", "DA18",
-    "BR8"
-]
+CATCHMENT_WEST = ["DA1", "DA2", "DA4", "DA5", "DA6", "DA7", "DA8", "DA9", "DA10", "DA14", "DA15", "DA16", "DA17", "DA18", "BR8"]
 
 CATCHMENT_ALL = CATCHMENT_EAST + CATCHMENT_WEST
+CATCHMENT_PREFIXES = tuple(p.upper().replace(" ", "") for p in CATCHMENT_ALL)
 
 # ----------------------------------------------------
 # 🎨 FIXED COLOUR MAP FOR DONATION SOURCES
 # ----------------------------------------------------
-DONATION_SOURCE_COLORS = {
-    "LSPSWP":  [255, 165, 0, 220],   # Lottery Play money
-    "LSPRDD":  [255, 140, 0, 220],   # Lottery play (variation)
-    "REGSOL":  [0, 128, 255, 220],   # Regular Giving (solicited)
-    "REGOLD":  [0, 102, 204, 220],   # Regular Giving (old)
-    "IMOGEN":  [255, 105, 180, 220], # In Memory General
-    "LSPLDD":  [255, 165, 0, 220],   # Lottery play money
-    "LSPBBP":  [255, 165, 0, 220],   # Lottery play money
-    "IMOMTR":  [219, 112, 147, 220], # Memory Tree
-    "LOTDON":  [255, 165, 0, 220],   # Lottery donation
-    "GDRTKT":  [50, 205, 50, 220],   # Prize Draw Tickets
-    "LOLSOL":  [255, 215, 0, 220],   # Lights of Love
-    "CFADON":  [30, 144, 255, 220],  # Community fundraising
-    "TWIREG":  [138, 43, 226, 220],  # Twilight registration
-    "APLSOL":  [0, 191, 255, 220],   # Appeal donations
-    "TWISPO":  [148, 0, 211, 220],   # Twilight sponsorship
-    "APLXMS":  [0, 255, 255, 220],   # Christmas Appeal
+DONATION_SOURCE_LABELS = {
+    "LSPSWP": "Lottery Play money",
+    "LSPRDD": "Lottery Play money",
+    "REGSOL": "Regular Giving (campaign solicited)",
+    "REGOLD": "Regular Giving (legacy agreement)",
+    "IMOGEN": "In Memory (general donation)",
+    "LSPLDD": "Lottery Play money",
+    "LSPBBP": "Lottery Play money",
+    "IMOMTR": "Memory Tree",
+    "LOTDON": "Lottery donation",
+    "GDRTKT": "Grand Prize Draw ticket sales",
+    "LOLSOL": "Lights of Love campaign",
+    "CFADON": "Community fundraising donations",
+    "TWIREG": "Twilight registration fee",
+    "APLSOL": "Appeal donations",
+    "TWISPO": "Twilight sponsorship money",
+    "APLXMS": "Christmas Appeal donations",
 }
 
-DEFAULT_SOURCE_COLOR = [200, 200, 200, 220]    # grey fallback
+DONATION_SOURCE_COLORS = {
+    "LSPSWP": [255, 165, 0, 220],  # Lottery Play money
+    "LSPRDD": [255, 140, 0, 220],  # Lottery play (variation)
+    "REGSOL": [0, 128, 255, 220],  # Regular Giving (solicited)
+    "REGOLD": [0, 102, 204, 220],  # Regular Giving (old)
+    "IMOGEN": [255, 105, 180, 220],  # In Memory General
+    "LSPLDD": [255, 165, 0, 220],  # Lottery play money
+    "LSPBBP": [255, 165, 0, 220],  # Lottery play money
+    "IMOMTR": [219, 112, 147, 220],  # Memory Tree
+    "LOTDON": [255, 165, 0, 220],  # Lottery donation
+    "GDRTKT": [50, 205, 50, 220],  # Prize Draw Tickets
+    "LOLSOL": [255, 215, 0, 220],  # Lights of Love
+    "CFADON": [30, 144, 255, 220],  # Community fundraising
+    "TWIREG": [138, 43, 226, 220],  # Twilight registration
+    "APLSOL": [0, 191, 255, 220],  # Appeal donations
+    "TWISPO": [148, 0, 211, 220],  # Twilight sponsorship
+    "APLXMS": [0, 255, 255, 220],  # Christmas Appeal
+}
 
-allmonths = []
+DEFAULT_SOURCE_COLOR = [200, 200, 200, 220]  # grey fallback
+
+
 # ----------------------------
 # Data loading
 # ----------------------------
 @st.cache_data(show_spinner=True)
 def load_data():
-    """
-    Load patient, donor and shop datasets + MSOA income parquet.
-    Precompute income colours and GeoJSON for pydeck.
-    """
+    """Load raw CSVs once and perform expensive normalization up-front."""
     patients = pd.read_csv("postcode_coordinates.csv")
     donors = pd.read_csv("donation_events_geocoded.csv")
     shops = pd.read_csv("shops_geocoded.csv")
-    
+
     # Normalise postcode column
     if "Postcode" in donors.columns and "postcode" not in donors.columns:
         donors.rename(columns={"Postcode": "postcode"}, inplace=True)
@@ -80,13 +89,7 @@ def load_data():
 
     # Donation Amount
     if "Total_Amount" in donors.columns:
-        donors["Donation Amount"] = (
-            donors["Total_Amount"]
-            .astype(str)
-            .str.replace(r"[£,]", "", regex=True)
-            .astype(float)
-            .fillna(0.0)
-        )
+        donors["Donation Amount"] = donors["Total_Amount"].astype(str).str.replace(r"[£,]", "", regex=True).astype(float).fillna(0.0)
     else:
         donors["Donation Amount"] = 0.0
 
@@ -102,21 +105,22 @@ def load_data():
     if "Application" not in donors.columns:
         donors["Application"] = "Unknown"
 
-    # Extract postcode area
+    # Extract postcode area + cached cleaned postcode (used repeatedly in filters)
     for df in [patients, donors, shops]:
         if "postcode" not in df.columns and "Postcode" in df.columns:
             df.rename(columns={"Postcode": "postcode"}, inplace=True)
 
         df["postcode"] = df["postcode"].astype(str).str.strip()
         df["postcode_area"] = df["postcode"].str.extract(r"^([A-Z]{1,2})")
+        df["postcode_clean"] = df["postcode"].str.upper().str.replace(r"\s+", "", regex=True)
+
+        if "country" in df.columns:
+            df["country"] = df["country"].fillna("Unknown")
+        else:
+            df["country"] = "Unknown"
 
     # Unique donor postcodes
-    donors_unique = (
-        donors[["postcode", "latitude", "longitude", "country", "postcode_area"]]
-        .dropna(subset=["latitude", "longitude"])
-        .drop_duplicates(subset=["postcode"])
-        .reset_index(drop=True)
-    )
+    donors_unique = donors[["postcode", "latitude", "longitude", "country", "postcode_area"]].dropna(subset=["latitude", "longitude"]).drop_duplicates(subset=["postcode"]).reset_index(drop=True)
 
     return patients, donors_unique, donors, shops
 
@@ -129,19 +133,20 @@ all_months = sorted(donor_events["month"].unique())
 # Region mapping
 # ----------------------------
 REGION_GROUPS = {
-    "London": ["EC","WC","E","N","NW","SE","SW","W"],
-    "South East": ["BN","BR","CR","CT","DA","GU","HP","KT","ME","OX","PO","RG","RH","SL","SM","SO","TN","TW"],
-    "South West": ["BA","BH","BS","EX","GL","PL","SN","SP","TA","TQ","TR"],
-    "East of England": ["AL","CB","CM","CO","EN","IP","LU","NR","PE","SG"],
-    "West Midlands": ["B","CV","DY","HR","ST","SY","TF","WR","WS","WV"],
-    "East Midlands": ["DE","DN","LE","LN","NG","NN","SK","S"],
-    "North West": ["BB","BL","CA","CH","CW","FY","LA","L","M","OL","PR","SK","WA","WN"],
-    "Yorkshire & Humber": ["BD","DN","HD","HG","HU","HX","LS","S","WF","YO"],
-    "North East": ["DH","DL","NE","SR","TS"],
-    "Wales": ["CF","LD","LL","NP","SA","SY"],
-    "Scotland": ["AB","DD","DG","EH","FK","G","HS","IV","KA","KW","KY","ML","PA","PH","TD","ZE"],
-    "Northern Ireland": ["BT"]
+    "London": ["EC", "WC", "E", "N", "NW", "SE", "SW", "W"],
+    "South East": ["BN", "BR", "CR", "CT", "DA", "GU", "HP", "KT", "ME", "OX", "PO", "RG", "RH", "SL", "SM", "SO", "TN", "TW"],
+    "South West": ["BA", "BH", "BS", "EX", "GL", "PL", "SN", "SP", "TA", "TQ", "TR"],
+    "East of England": ["AL", "CB", "CM", "CO", "EN", "IP", "LU", "NR", "PE", "SG"],
+    "West Midlands": ["B", "CV", "DY", "HR", "ST", "SY", "TF", "WR", "WS", "WV"],
+    "East Midlands": ["DE", "DN", "LE", "LN", "NG", "NN", "SK", "S"],
+    "North West": ["BB", "BL", "CA", "CH", "CW", "FY", "LA", "L", "M", "OL", "PR", "SK", "WA", "WN"],
+    "Yorkshire & Humber": ["BD", "DN", "HD", "HG", "HU", "HX", "LS", "S", "WF", "YO"],
+    "North East": ["DH", "DL", "NE", "SR", "TS"],
+    "Wales": ["CF", "LD", "LL", "NP", "SA", "SY"],
+    "Scotland": ["AB", "DD", "DG", "EH", "FK", "G", "HS", "IV", "KA", "KW", "KY", "ML", "PA", "PH", "TD", "ZE"],
+    "Northern Ireland": ["BT"],
 }
+
 
 # ----------------------------
 # Login
@@ -157,10 +162,11 @@ def login():
         else:
             st.error("Invalid username or password")
 
+
 if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
     login()
     st.stop()
-    
+
 if "map_style" not in st.session_state:
     st.session_state["map_style"] = "mapbox://styles/mapbox/light-v11"
 
@@ -181,23 +187,13 @@ show_shops = st.sidebar.checkbox("Show Shops", value=True)
 
 st.sidebar.subheader("📅 Date Range")
 
-start_month, end_month = st.sidebar.select_slider(
-    "Select month range:",
-    options=all_months,
-    value=(all_months[0], all_months[-1])
-)
+start_month, end_month = st.sidebar.select_slider("Select month range:", options=all_months, value=(all_months[0], all_months[-1]))
 
 st.sidebar.subheader("📍 Catchment Filter")
-use_catchment = st.sidebar.checkbox(
-    "Show ONLY ellenor catchment area",
-    value=False
-)
+use_catchment = st.sidebar.checkbox("Show ONLY ellenor catchment area", value=False)
 
 st.sidebar.subheader("📊 Differentiate Donor Sources")
-Differentiate_Donor_Sources = st.sidebar.checkbox(
-    "Differentiate Donor Sources on Map",
-    value=False
-)
+Differentiate_Donor_Sources = st.sidebar.checkbox("Differentiate Donor Sources on Map", value=False)
 
 # Donation range
 st.sidebar.subheader("💷 Donation Amount Filter")
@@ -218,49 +214,33 @@ map_styles = {
     "Light": "mapbox://styles/mapbox/light-v11",
     "Dark": "mapbox://styles/mapbox/dark-v11",
     "Outdoors": "mapbox://styles/mapbox/outdoors-v12",
-    "Satellite Streets": "mapbox://styles/mapbox/satellite-streets-v12"
+    "Satellite Streets": "mapbox://styles/mapbox/satellite-streets-v12",
 }
 
-selected_style = st.sidebar.selectbox(
-    "Choose map style:",
-    options=list(map_styles.keys()),
-    index=0  # Default to Satellite
-)
+selected_style = st.sidebar.selectbox("Choose map style:", options=list(map_styles.keys()), index=0)  # Default to Satellite
 
 map_style_url = map_styles[selected_style]
 
 # Country
-country_all = sorted(
-    set(patients["country"].dropna())
-    | set(donors_unique["country"].dropna())
-    | set(donor_events["country"].dropna())
-)
+country_all = sorted(set(patients["country"].dropna()) | set(donors_unique["country"].dropna()) | set(donor_events["country"].dropna()))
 country_filter = st.sidebar.multiselect("Country:", country_all, default=country_all)
 
 # Region → postcode areas
 region_filter = st.sidebar.multiselect("UK Region:", list(REGION_GROUPS.keys()), default=list(REGION_GROUPS.keys()))
 allowed_postcode_areas = [x for r in region_filter for x in REGION_GROUPS[r]]
 
+
 def apply_filters(df):
-    
-    base = df[
-        (df["country"].isin(country_filter)) &
-        (df["postcode_area"].isin(allowed_postcode_areas))
-    ].copy()
-    
-    # Apply catchment toggle
-    if use_catchment:
-        prefixes = tuple([p.upper().replace(" ", "") for p in CATCHMENT_ALL])
-        postcode_norm = base["postcode"].astype(str).str.upper().str.replace(r"\s+", "", regex=True)
-        base = base[postcode_norm.str.startswith(prefixes)].copy()
+    base = df[(df["country"].isin(country_filter)) & (df["postcode_area"].isin(allowed_postcode_areas))].copy()
+
+    # Apply catchment toggle using precomputed clean prefixes
+    if use_catchment and "postcode_clean" in base.columns:
+        base = base[base["postcode_clean"].str.startswith(CATCHMENT_PREFIXES)].copy()
 
     # Donation filter
     if "Donation Amount" in base.columns:
-        base = base[
-            (base["Donation Amount"] >= donation_filter[0]) &
-            (base["Donation Amount"] <= donation_filter[1])
-        ].copy()
-    
+        base = base[(base["Donation Amount"] >= donation_filter[0]) & (base["Donation Amount"] <= donation_filter[1])].copy()
+
     # 📌 NEW: Month range filter
     if "month" in base.columns:
         base = base[(base["month"] >= start_month) & (base["month"] <= end_month)].copy()
@@ -272,18 +252,63 @@ pf = apply_filters(patients)
 de = apply_filters(donor_events)
 shops = apply_filters(shops)
 
+
 # ---- Aggregation for tooltip ----
 # Group donor events by postcode for the filtered time period
-donor_summary = (
-    de.groupby("postcode")
-      .agg(
-          total_events=("Total_Amount", "count"),
-          max_donation=("Total_Amount", "max"),
-          total_donation=("Total_Amount", "sum"),
-          donor_type=("Donor_Type", lambda x: ", ".join(sorted(set(x))))
-      )
-      .reset_index()
-)
+def _format_source_names(codes):
+    readable = [
+        DONATION_SOURCE_LABELS.get(code, code)
+        for code in codes
+        if pd.notna(code) and str(code).strip()
+    ]
+    return ", ".join(readable) if readable else "Unknown"
+
+
+def aggregate_donors_for_map(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse multiple donation events down to one row per postcode."""
+    if df.empty:
+        return df
+
+    working = df.sort_values("month_dt").copy()
+
+    latest = (
+        working.groupby("postcode", as_index=False)
+        .last()[["postcode", "month", "Donation Amount"]]
+        .rename(
+            columns={
+                "month": "latest_month",
+                "Donation Amount": "latest_donation",
+            }
+        )
+    )
+
+    def _unique_join(values):
+        cleaned = sorted({str(v) for v in values if pd.notna(v) and str(v).strip()})
+        return ", ".join(cleaned) if cleaned else "Unknown"
+
+    grouped = working.groupby("postcode", as_index=False).agg(
+        latitude=("latitude", "first"),
+        longitude=("longitude", "first"),
+        country=("country", "first"),
+        postcode_area=("postcode_area", "first"),
+        donor_type=("Donor_Type", _unique_join),
+        source_list=("Source", lambda x: sorted({str(v) for v in x if pd.notna(v) and str(v).strip()})),
+        total_donation=("Donation Amount", "sum"),
+        max_donation=("Donation Amount", "max"),
+        total_events=("Donation Amount", "size"),
+    )
+
+    grouped = grouped.merge(latest, on="postcode", how="left")
+    grouped["latest_month"] = grouped["latest_month"].fillna("Unknown")
+    grouped["latest_donation"] = grouped["latest_donation"].fillna(0.0)
+
+    grouped["sources_display"] = grouped["source_list"].apply(_format_source_names)
+    grouped["primary_source"] = grouped["source_list"].apply(lambda vals: vals[0] if len(vals) == 1 else ("Multiple" if vals else "Unknown"))
+
+    grouped["Source"] = grouped["primary_source"]
+    grouped["Donation Amount"] = grouped["total_donation"]
+
+    return grouped.drop(columns=["source_list"])
 
 
 # ----------------------------
@@ -299,126 +324,106 @@ st.markdown("### 📊 Donation Summary")
 st.metric("Total Donations", f"£{de['Donation Amount'].sum():,.2f}")
 
 
-
-def create_pydeck_map(df_pat, df_don, df_shop, timeline_month=None,
-                      show_patients=True, show_donors=True, show_shops=True, map_style="mapbox://styles/mapbox/satellite-v9", differentiate_donor_sources=False):
-
+def create_pydeck_map(
+    df_pat, df_don, df_shop, timeline_month=None, show_patients=True, show_donors=True, show_shops=True, map_style="mapbox://styles/mapbox/satellite-v9", differentiate_donor_sources=False
+):
 
     # Timeline filtering
     if timeline_month is not None:
         df_don = df_don[df_don["month"] == timeline_month].copy()
-
 
     # Work on copies so we don't mutate original dataframes
     df_pat = df_pat.copy()
     df_don = df_don.copy()
     df_shop = df_shop.copy()
 
+    if show_donors and not df_don.empty:
+        df_don = aggregate_donors_for_map(df_don)
+
     # Patients
     if show_patients and not df_pat.empty:
         df_pat["kind"] = "Patient"
         df_pat["extra"] = ""  # nothing more to show (you can add more if you like)
 
-
-    # Merge aggregated donor info
-    if show_donors and not df_don.empty:
-        df_don = df_don.merge(donor_summary, on="postcode", how="left")
-        
-        
     # Donors
     if show_donors and not df_don.empty:
         df_don["kind"] = "Donor"
         df_don["extra"] = (
-            "Donor Type: " + df_don["donor_type"].astype(str) +
-            "<br/>Source: " + df_don["Source"].astype(str) +                                 
-            "<br/>Total Donation Amount: £" + df_don["total_donation"].round(2).astype(str) +
-            "<br/>Max Single Donation: £" + df_don["max_donation"].round(2).astype(str) +
-            "<br/>Number of Donations: " + df_don["total_events"].astype(int).astype(str) +
-            "<br/>Latest Month: " + df_don["month"].astype(str) +
-            "<br/>Latest Donation: £" + df_don["Donation Amount"].round(2).astype(str)
+            "Donor Type: "
+            + df_don["donor_type"].astype(str)
+            + "<br/>Sources: "
+            + df_don["sources_display"].astype(str)
+            + "<br/>Total Donation Amount: £"
+            + df_don["total_donation"].round(2).astype(str)
+            + "<br/>Max Single Donation: £"
+            + df_don["max_donation"].round(2).astype(str)
+            + "<br/>Number of Donations: "
+            + df_don["total_events"].astype(int).astype(str)
+            + "<br/>Latest Month: "
+            + df_don["latest_month"].astype(str)
+            + "<br/>Latest Donation: £"
+            + df_don["latest_donation"].round(2).astype(str)
         )
-        
+
     if differentiate_donor_sources:
         # map sources to colours
         df_don["color"] = df_don["Source"].map(DONATION_SOURCE_COLORS)
 
         # fallback for unknown or missing sources
-        df_don["color"] = df_don["color"].apply(
-            lambda x: x if isinstance(x, list) else DEFAULT_SOURCE_COLOR
-        )
+        df_don["color"] = df_don["color"].apply(lambda x: x if isinstance(x, list) else DEFAULT_SOURCE_COLOR)
     else:
         # simple default colour (blue)
         df_don["color"] = [[0, 128, 255, 200]] * len(df_don)
-
-
 
     # Shops
     if show_shops and not df_shop.empty:
         df_shop["kind"] = "Shop"
         df_shop["extra"] = "Name: " + df_shop["name"].astype(str)
 
-    # Combine coords to find centre
-    combined = pd.concat([
-        df_pat[["latitude","longitude"]],
-        df_don[["latitude","longitude"]],
-        df_shop[["latitude","longitude"]],
-    ]).dropna()
+    # Combine coords to find centre (only include visible layers)
+    coord_frames = []
+    if show_patients and not df_pat.empty:
+        coord_frames.append(df_pat[["latitude", "longitude"]])
+    if show_donors and not df_don.empty:
+        coord_frames.append(df_don[["latitude", "longitude"]])
+    if show_shops and not df_shop.empty:
+        coord_frames.append(df_shop[["latitude", "longitude"]])
 
+    if not coord_frames:
+        return None
+
+    combined = pd.concat(coord_frames).dropna()
     if combined.empty:
         return None
 
-    center = [
-        combined["latitude"].mean(),
-        combined["longitude"].mean()
-    ]
+    center = [combined["latitude"].mean(), combined["longitude"].mean()]
 
     layers = []
 
     # Patients
     if show_patients and not df_pat.empty:
-        layers.append(pdk.Layer(
-            "ScatterplotLayer",
-            data=df_pat,
-            get_position="[longitude, latitude]",
-            get_radius=80,
-            get_fill_color=[255, 0, 0, 180],
-            pickable=True
-        ))
-
-
+        layers.append(pdk.Layer("ScatterplotLayer", data=df_pat, get_position="[longitude, latitude]", get_radius=80, get_fill_color=[255, 0, 0, 180], pickable=True))
 
     # Donors
     if show_donors and not df_don.empty:
-        layers.append(pdk.Layer(
-            "ScatterplotLayer",
-            data=df_don,
-            get_position="[longitude, latitude]",
-            get_radius=80,
-            get_fill_color="color",
-            pickable=True
-        ))
+        layers.append(pdk.Layer("ScatterplotLayer", data=df_don, get_position="[longitude, latitude]", get_radius=80, get_fill_color="color", pickable=True))
 
     # Shops
     if show_shops and not df_shop.empty:
-        layers.append(pdk.Layer(
-            "ScatterplotLayer",
-            data=df_shop,
-            get_position="[longitude, latitude]",
-            get_radius=100,
-            get_fill_color=[0, 255, 0, 180],
-            pickable=True
-        ))
+        layers.append(pdk.Layer("ScatterplotLayer", data=df_shop, get_position="[longitude, latitude]", get_radius=100, get_fill_color=[0, 255, 0, 180], pickable=True))
 
     # Heatmap (donors)
     if show_donors and not df_don.empty:
-        layers.append(pdk.Layer(
-            "HeatmapLayer",
-            data=df_don,
-            get_position="[longitude, latitude]",
-            get_weight="Donation Amount",
-            radiusPixels=60,
-        ))
-        
+        layers.append(
+            pdk.Layer(
+                "HeatmapLayer",
+                data=df_don,
+                get_position="[longitude, latitude]",
+                get_weight="Donation Amount",
+                radiusPixels=60,
+            )
+        )
+
     view_state = pdk.ViewState(
         latitude=center[0],
         longitude=center[1],
@@ -427,13 +432,7 @@ def create_pydeck_map(df_pat, df_don, df_shop, timeline_month=None,
     )
 
     # ---- Global tooltip template (works for all layers) ----
-    tooltip = {
-        "html": "<b>{kind}</b><br/>Postcode: {postcode}<br/>{extra}",
-        "style": {
-            "color": "white",
-            "backgroundColor": "rgba(0, 0, 0, 0.7)"
-        }
-    }
+    tooltip = {"html": "<b>{kind}</b><br/>Postcode: {postcode}<br/>{extra}", "style": {"color": "white", "backgroundColor": "rgba(0, 0, 0, 0.7)"}}
 
     return pdk.Deck(
         layers=layers,
@@ -444,20 +443,22 @@ def create_pydeck_map(df_pat, df_don, df_shop, timeline_month=None,
         parameters={"clearColor": [1.0, 1.0, 1.0, 1.0]},
     )
 
+
 # ----------------------------
 # Timeline UI
 # ----------------------------
+timeline_month = None
+month_options = sorted(de["month"].unique())
 if show_timeline:
-    timeline_month = st.select_slider(
-        "Select month",
-        options=sorted(de["month"].unique()),
-        value=sorted(de["month"].unique())[0]
-    )
-else:
-    timeline_month = None
+    if month_options:
+        timeline_month = st.select_slider("Select month", options=month_options, value=month_options[0])
+    else:
+        st.info("No donor months available for the current filters.")
 
 
-deck_map = create_pydeck_map(pf, de, shops, timeline_month, show_donors=show_donors, show_patients=show_patients, show_shops=show_shops, map_style=map_style_url, differentiate_donor_sources=Differentiate_Donor_Sources)
+deck_map = create_pydeck_map(
+    pf, de, shops, timeline_month, show_donors=show_donors, show_patients=show_patients, show_shops=show_shops, map_style=map_style_url, differentiate_donor_sources=Differentiate_Donor_Sources
+)
 
 # ----------------------------
 # UI + map
@@ -471,9 +472,4 @@ else:
 # Download section
 # ----------------------------
 st.subheader("⬇️ Download filtered donor data")
-st.download_button(
-    "Download donor events (filtered)",
-    data=de.to_csv(index=False),
-    file_name="donor_events_filtered.csv",
-    mime="text/csv"
-)
+st.download_button("Download donor events (filtered)", data=de.to_csv(index=False), file_name="donor_events_filtered.csv", mime="text/csv")
