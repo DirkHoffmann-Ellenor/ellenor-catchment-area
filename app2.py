@@ -144,7 +144,7 @@ REGION_GROUPS = {
 # Login
 # ----------------------------
 def login():
-    st.title("🔐 Login - Fixed")
+    st.title("🔐 Login")
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
     if st.button("Login"):
@@ -228,33 +228,6 @@ area_metric = None
 area_metric_label = ""
 area_metric_unit = ""
 
-if area_layer_available:
-    st.sidebar.subheader("🏘️ Income & Age Overlay")
-    metric_options = []
-    if "net_income" in area_income.columns:
-        metric_options.append(("net_income", "Net annual income (£)", "£"))
-    if "total_population" in area_income.columns:
-        metric_options.append(("total_population", "Total population", "people"))
-
-    for col in area_income.columns:
-        lower = col.lower()
-        if lower.startswith("age"):
-            label = col.replace("_", " ").replace("pct", "%").title()
-            unit = "%"
-            if not lower.endswith("pct"):
-                unit = "people"
-            metric_options.append((col, label, unit))
-
-    if metric_options:
-        show_area_layer = st.sidebar.checkbox("Show demographic overlay", value=False)
-        metric_labels = [label for _, label, _ in metric_options]
-        selected_label = st.sidebar.selectbox("Metric to colour by:", metric_labels, index=0)
-        selected = next(item for item in metric_options if item[1] == selected_label)
-        area_metric, area_metric_label, area_metric_unit = selected
-    else:
-        st.sidebar.info("Income dataset loaded but no numeric metrics available.")
-else:
-    st.sidebar.info("Add Postcode_Income_Filtered.csv to enable area overlays.")
 
 # Allow manual rebuild when CSVs change
 if st.sidebar.button("♻️ Rebuild data cache"):
