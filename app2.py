@@ -30,7 +30,7 @@ st.set_page_config(page_title="Postcode Coverage Map", layout="wide")
 st.title("ellenor Data Map Explorer")
 st.subheader("Long Loading Time are expected on First Load due to large data processing")
 
-OVERLAY_HTML_FILE = Path(__file__).with_name("uk_income_map_mapbox.html")
+OVERLAY_HTML_FILE = Path(__file__).with_name("uk_income_map_mapbox_2.html")
 
 CATCHMENT_EAST = ["DA3", "DA11", "DA12", "DA13", "TN15"]
 
@@ -546,7 +546,6 @@ else:
 overlay_html = load_overlay_html(OVERLAY_HTML_FILE)
 if overlay_html:
     st.subheader("Income & Age Overlay")
-    st.caption("This saved Folium map shows the pre-rendered population and age overlays you built previously.")
     components.html(overlay_html, height=900, scrolling=True)
 else:
     st.warning(f"Overlay file not found at {OVERLAY_HTML_FILE}.")
